@@ -1,6 +1,6 @@
 import { getConnection } from "@/lib/db";
 
-type TableName = "subjects" | "data_pulls" | "data_pull" | "logs";
+type TableName = "subjects" | "data_pulls" | "data_pull" | "logs" | "files";
 
 type SubjectRow = {
     subject_id: string;
@@ -32,6 +32,12 @@ type WarningRow = {
     log_timestamp: string;
     log_level: string;
     log_message: Record<string, unknown>;
+};
+
+type FilePathCountRow = {
+    subject_id: string;
+    data_source_name: string | null;
+    unique_file_paths: string;
 };
 
 const CREATED_AT_JSON_REGEX = "^\\d{4}-\\d{2}-\\d{2}([ T].*)?$";
@@ -109,11 +115,13 @@ export async function GET(
     const connection = getConnection();
 
     const dataPullTable = await getFirstExistingTable(["data_pulls", "data_pull"]);
+    const filesTable = await getFirstExistingTable(["files"]);
 
-    const [subjectColumns, dataPullColumns, logColumns] = await Promise.all([
+    const [subjectColumns, dataPullColumns, logColumns, filesColumns] = await Promise.all([
         getColumns("subjects"),
         dataPullTable ? getColumns(dataPullTable) : Promise.resolve(new Set<string>()),
         getColumns("logs"),
+        filesTable ? getColumns(filesTable) : Promise.resolve(new Set<string>()),
     ]);
 
     if (!subjectColumns.has("project_id") || !subjectColumns.has("subject_id") || !subjectColumns.has("site_id") || !subjectColumns.has("subject_metadata")) {
@@ -132,6 +140,7 @@ export async function GET(
     const hasDataPullSubjectColumn = Boolean(dataPullTable) && dataPullColumns.has("subject_id");
     const hasDataPullProjectColumn = dataPullColumns.has("project_id");
     const dataPullTableSql = dataPullTable ? `public.${quoteIdentifier(dataPullTable)}` : null;
+    const filesTableSql = filesTable ? `public.${quoteIdentifier(filesTable)}` : null;
 
     const pullSourceColumn = pickFirstColumn(dataPullColumns, [
         "data_source_name",
@@ -145,8 +154,18 @@ export async function GET(
         "inserted_at",
         "updated_at",
     ]);
+    const pullFilePathColumn = pickFirstColumn(dataPullColumns, ["file_path", "filepath", "path"]);
 
     const hasFileMd5Column = dataPullColumns.has("file_md5");
+
+    const filesSourceColumn = pickFirstColumn(filesColumns, [
+        "data_source_name",
+        "source_name",
+        "data_source_identifier",
+    ]);
+    const filesPathColumn = pickFirstColumn(filesColumns, ["file_path", "filepath", "path"]);
+    const hasFilesFileMd5Column = filesColumns.has("file_md5");
+    const hasFilesProjectColumn = filesColumns.has("project_id");
 
     const subjectCreatedAtExpression = subjectColumns.has("created_at")
         ? "created_at::timestamptz"
@@ -208,6 +227,7 @@ export async function GET(
     let pullCountsBySubject: Array<{ subject_id: string; total_pulls: number; pulls_with_unique_file_md5: number }> = [];
     let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; file_md5: string | null; has_file_md5: boolean }> = [];
     let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number }> = [];
+    let uniqueFilePathsByDataSource: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }> = [];
 
     if (missingSubjectIds.length > 0 && hasDataPullSubjectColumn && dataPullTableSql) {
         const uniqueFileMd5CountExpr = hasFileMd5Column
@@ -302,6 +322,46 @@ export async function GET(
         }
     }
 
+    if (filesTableSql && filesPathColumn && pullSourceColumn && hasDataPullSubjectColumn && dataPullTableSql) {
+        const pullSourceSelect = `${quoteIdentifier(pullSourceColumn)}::text`;
+        const joinCondition = hasFileMd5Column && hasFilesFileMd5Column
+            ? `NULLIF(p.file_md5::text, '') IS NOT NULL
+               AND NULLIF(f.file_md5::text, '') IS NOT NULL
+               AND NULLIF(p.file_md5::text, '') = NULLIF(f.file_md5::text, '')`
+            : pullFilePathColumn
+                ? `NULLIF(p.${quoteIdentifier(pullFilePathColumn)}::text, '') IS NOT NULL
+                   AND NULLIF(f.${quoteIdentifier(filesPathColumn)}::text, '') IS NOT NULL
+                   AND NULLIF(p.${quoteIdentifier(pullFilePathColumn)}::text, '') = NULLIF(f.${quoteIdentifier(filesPathColumn)}::text, '')`
+                : null;
+
+        if (joinCondition) {
+        const filePathCountsQuery = `
+            SELECT
+                p.subject_id,
+                ${pullSourceSelect} AS data_source_name,
+                COUNT(DISTINCT NULLIF(f.${quoteIdentifier(filesPathColumn)}::text, ''))::int AS unique_file_paths
+            FROM ${dataPullTableSql} p
+            INNER JOIN ${filesTableSql} f
+                ON ${joinCondition}
+            WHERE p.subject_id = ANY($1::text[])
+              ${hasDataPullProjectColumn ? "AND p.project_id = $2" : ""}
+              ${hasFilesProjectColumn ? `AND f.project_id = ${hasDataPullProjectColumn ? "$2" : "$2"}` : ""}
+            GROUP BY p.subject_id, ${pullSourceSelect}
+            ORDER BY p.subject_id, ${pullSourceSelect}
+        `;
+
+        const filePathCountsParams = hasDataPullProjectColumn || hasFilesProjectColumn
+            ? [missingSubjectIds, projectId]
+            : [missingSubjectIds];
+        const filePathCountsResult = await connection.query(filePathCountsQuery, filePathCountsParams);
+        uniqueFilePathsByDataSource = (filePathCountsResult.rows as FilePathCountRow[]).map((row) => ({
+            subject_id: row.subject_id,
+            data_source_name: row.data_source_name,
+            unique_file_paths: parseCount(row.unique_file_paths),
+        }));
+        }
+    }
+
     let lastWarnings: Array<{ timestamp: string; level: string; message: string; site_id: string | null; subject_id: string | null; data_source_name: string | null }> = [];
 
     if (logColumns.has("log_level") && logColumns.has("log_message") && logColumns.has("log_timestamp")) {
@@ -360,6 +420,7 @@ export async function GET(
             site_id: row.site_id,
             created_at: row.created_at,
         })),
+        unique_file_paths_by_data_source: uniqueFilePathsByDataSource,
         data_pull_coverage_by_subject: coverageBySubject,
         data_pull_trend_by_subject: pullTrendBySubject,
         last_warning_logs: lastWarnings,
@@ -371,6 +432,11 @@ export async function GET(
                 data_pulls_available: hasDataPullSubjectColumn,
                 data_pull_table: dataPullTable,
                 data_pulls_columns: [...dataPullColumns],
+                files_available: Boolean(filesTableSql && filesSourceColumn && filesPathColumn),
+                files_table: filesTable,
+                files_source_column: filesSourceColumn,
+                files_path_column: filesPathColumn,
+                files_scoped_by_project: hasFilesProjectColumn,
             },
         },
     };

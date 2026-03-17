@@ -19,6 +19,7 @@ type MonitoringResponse = {
         newly_added_last_night_count: number;
     };
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
+    unique_file_paths_by_data_source: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }>;
     data_pull_coverage_by_subject: Array<{
         subject_id: string;
         total_pulls: number;
@@ -43,6 +44,7 @@ type MonitoringResponse = {
     metadata?: {
         notes?: {
             data_pulls_available?: boolean;
+            files_available?: boolean;
         };
     };
 };
@@ -182,6 +184,75 @@ export default function MonitoringPage() {
         return [...baseColumns, ...modalityColumns];
     }, []);
 
+    const uniqueFilePathColumns = React.useMemo<GridColDef[]>(
+        () => [
+            { field: "subject_id", headerName: "Participant ID", minWidth: 180, flex: 1 },
+            ...COVERAGE_MODALITY_COLUMNS.map((column): GridColDef => ({
+                field: column.key,
+                headerName: column.label,
+                type: "number",
+                minWidth: 180,
+                renderCell: (params) => {
+                    const value = typeof params.value === "number" ? params.value : 0;
+                    if (value > 0) {
+                        return <span className="text-xs font-medium">{value}</span>;
+                    }
+
+                    return (
+                        <span className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-500/50 dark:bg-amber-900/30 dark:text-amber-300">
+                            N/A
+                        </span>
+                    );
+                },
+            })),
+        ],
+        []
+    );
+
+    const uniqueFilePathRows = React.useMemo(() => {
+        const baseBySubject = new Map<string, Record<CoverageModalityKey, number>>();
+
+        for (const row of data?.data_pull_coverage_by_subject ?? []) {
+            baseBySubject.set(row.subject_id, {
+                redcap: 0,
+                eeg_sharepoint: 0,
+                mindlamp: 0,
+                mindlamp_qc_sharepoint: 0,
+                penncnb: 0,
+                cantab: 0,
+                transcript_sharepoint: 0,
+            });
+        }
+
+        for (const row of data?.unique_file_paths_by_data_source ?? []) {
+            const modality = mapDataSourceToCoverageModality(row.data_source_name);
+            if (!modality) continue;
+            if (!baseBySubject.has(row.subject_id)) {
+                baseBySubject.set(row.subject_id, {
+                    redcap: 0,
+                    eeg_sharepoint: 0,
+                    mindlamp: 0,
+                    mindlamp_qc_sharepoint: 0,
+                    penncnb: 0,
+                    cantab: 0,
+                    transcript_sharepoint: 0,
+                });
+            }
+            const existing = baseBySubject.get(row.subject_id);
+            if (existing) {
+                existing[modality] += row.unique_file_paths ?? 0;
+            }
+        }
+
+        return [...baseBySubject.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([subjectId, modalityCounts]) => ({
+                id: subjectId,
+                subject_id: subjectId,
+                ...modalityCounts,
+            }));
+    }, [data]);
+
     const coverageRows = React.useMemo(() => {
         return (data?.data_pull_coverage_by_subject ?? []).map((row) => {
             const modalityUniqueMd5 = COVERAGE_MODALITY_COLUMNS.reduce<Record<CoverageModalityKey, number>>((acc, column) => {
@@ -275,7 +346,7 @@ export default function MonitoringPage() {
 
     const newlyAddedRows = React.useMemo(
         () =>
-            (data?.newly_added_last_night ?? []).map((row) => ({
+            (data?.newly_added_last_night ?? []).slice(0, 10).map((row) => ({
                 id: `${row.subject_id}-${row.site_id}`,
                 subject_id: row.subject_id,
                 site_id: row.site_id,
@@ -384,6 +455,44 @@ export default function MonitoringPage() {
                     </section>
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                        <h2 className="text-lg font-semibold mb-3">Newly Subjects</h2>
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[320px] w-full">
+                                <DataGrid
+                                    rows={newlyAddedRows}
+                                    columns={newlyAddedColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooterSelectedRowCount
+                                    pageSizeOptions={[10, 25, 50]}
+                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                    localeText={{ noRowsLabel: "No records" }}
+                                />
+                            </div>
+                        </MuiThemeProvider>
+                    </section>
+
+                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                        <h2 className="text-lg font-semibold mb-3">Unique File Paths by Data Source</h2>
+                        {data.metadata?.notes?.files_available === false && (
+                            <p className="text-xs text-muted-foreground mb-3">
+                                File path metrics are unavailable because the `files` schema does not contain required source/path columns.
+                            </p>
+                        )}
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[220px] w-full">
+                                <DataGrid
+                                    rows={uniqueFilePathRows}
+                                    columns={uniqueFilePathColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooter
+                                />
+                            </div>
+                        </MuiThemeProvider>
+                    </section>
+
+                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
                         <h2 className="text-lg font-semibold mb-3">Data Pull Coverage</h2>
                         {data.metadata?.notes?.data_pulls_available === false && (
                             <p className="text-xs text-muted-foreground mb-3">
@@ -404,24 +513,6 @@ export default function MonitoringPage() {
                                             paginationModel: { pageSize: 10, page: 0 },
                                         },
                                     }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
-                    </section>
-
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
-                        <h2 className="text-lg font-semibold mb-3">Newly Added Last Night</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[320px] w-full">
-                                <DataGrid
-                                    rows={newlyAddedRows}
-                                    columns={newlyAddedColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
                                     localeText={{ noRowsLabel: "No records" }}
                                 />
                             </div>
