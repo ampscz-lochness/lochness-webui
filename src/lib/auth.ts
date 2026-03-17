@@ -14,5 +14,5 @@ export const auth = betterAuth({
         autoSignIn: false,
     },
     secret: process.env.BETTER_AUTH_SECRET,
-    baseURL: process.env.NEXTAUTH_URL,
+    baseURL: process.env.BETTER_AUTH_URL ?? process.env.NEXTAUTH_URL,
 })
