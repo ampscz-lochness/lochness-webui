@@ -1,5 +1,8 @@
 "use client"
 import * as React from "react";
+import { DataGrid, type GridColDef } from "@mui/x-data-grid";
+import { ThemeProvider as MuiThemeProvider, createTheme } from "@mui/material/styles";
+import { useTheme } from "next-themes";
 
 import { BarChart3, RefreshCcw, Terminal } from "lucide-react";
 import { toast } from "sonner";
@@ -24,6 +27,7 @@ type MonitoringResponse = {
             subject_id: string;
             data_source_name: string | null;
             pull_timestamp: string | null;
+            file_md5: string | null;
             has_file_md5: boolean;
         }>;
     }>;
@@ -68,8 +72,36 @@ const normalizeDataSourceName = (value: string | null | undefined): string => {
     return value.slice(firstUnderscore + 1);
 };
 
+const COVERAGE_MODALITY_COLUMNS = [
+    { key: "redcap", label: "REDCap" },
+    { key: "eeg_sharepoint", label: "EEG (SharePoint)" },
+    { key: "mindlamp", label: "MindLAMP" },
+    { key: "mindlamp_qc_sharepoint", label: "MindLAMP QC (SharePoint)" },
+    { key: "penncnb", label: "PennCNB (UPENN_recap)" },
+    { key: "cantab", label: "CANTAB" },
+    { key: "transcript_sharepoint", label: "Transcript (SharePoint)" },
+] as const;
+
+type CoverageModalityKey = (typeof COVERAGE_MODALITY_COLUMNS)[number]["key"];
+
+const mapDataSourceToCoverageModality = (value: string | null | undefined): CoverageModalityKey | null => {
+    const normalized = normalizeDataSourceName(value).toLowerCase();
+
+    if (normalized.includes("mindlamp_qc") || normalized.includes("mindlampqc")) return "mindlamp_qc_sharepoint";
+    if (normalized.includes("upenn_recap") || normalized.includes("upenn_redcap") || normalized.includes("penncnb")) return "penncnb";
+    if (normalized.includes("redcap")) return "redcap";
+    if (normalized.includes("eeg")) return "eeg_sharepoint";
+    if (normalized.includes("mindlamp")) return "mindlamp";
+    if (normalized.includes("cantab")) return "cantab";
+    if (normalized.includes("transcript") || normalized.includes("transcripts")) return "transcript_sharepoint";
+
+    return null;
+};
+
 export default function MonitoringPage() {
     const monitoringIcon = <Terminal className="h-8 w-8" />;
+    const { resolvedTheme } = useTheme();
+    const isDarkMode = resolvedTheme === "dark";
 
     const [projectIdInput, setProjectIdInput] = React.useState("Procan");
     const [projectId, setProjectId] = React.useState("Procan");
@@ -121,15 +153,151 @@ export default function MonitoringPage() {
         return allValues.length > 0 ? Math.max(...allValues) : 1;
     }, [data]);
 
-    const coverageSourceColumns = React.useMemo(() => {
-        const allSources = new Set<string>();
-        for (const subject of data?.data_pull_coverage_by_subject ?? []) {
-            for (const item of subject.recent_pull_items) {
-                allSources.add(normalizeDataSourceName(item.data_source_name));
-            }
-        }
-        return [...allSources].sort((a, b) => a.localeCompare(b));
+    const coverageColumns = React.useMemo<GridColDef[]>(() => {
+        const baseColumns: GridColDef[] = [
+            { field: "subject_id", headerName: "Participant ID", minWidth: 180, flex: 1 },
+            { field: "total_pulls", headerName: "All Pull Records", type: "number", minWidth: 150 },
+            { field: "pulls_with_unique_file_md5", headerName: "Unique Files (MD5)", type: "number", minWidth: 170 },
+        ];
+
+        const modalityColumns = COVERAGE_MODALITY_COLUMNS.map((column): GridColDef => ({
+            field: column.key,
+            headerName: column.label,
+            type: "number",
+            minWidth: 180,
+            valueFormatter: (value) => (typeof value === "number" && value > 0 ? value : "N/A"),
+        }));
+
+        return [...baseColumns, ...modalityColumns];
+    }, []);
+
+    const coverageRows = React.useMemo(() => {
+        return (data?.data_pull_coverage_by_subject ?? []).map((row) => {
+            const modalityUniqueMd5 = COVERAGE_MODALITY_COLUMNS.reduce<Record<CoverageModalityKey, number>>((acc, column) => {
+                const uniqueMd5 = new Set(
+                    row.recent_pull_items
+                        .filter((item) => mapDataSourceToCoverageModality(item.data_source_name) === column.key)
+                        .map((item) => item.file_md5)
+                        .filter((value): value is string => Boolean(value))
+                );
+
+                // If there is exactly one unique pull, it must render as 1 (not N/A).
+                acc[column.key] = uniqueMd5.size;
+                return acc;
+            }, {
+                redcap: 0,
+                eeg_sharepoint: 0,
+                mindlamp: 0,
+                mindlamp_qc_sharepoint: 0,
+                penncnb: 0,
+                cantab: 0,
+                transcript_sharepoint: 0,
+            });
+
+            return {
+                id: row.subject_id,
+                subject_id: row.subject_id,
+                total_pulls: row.total_pulls,
+                pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
+                ...modalityUniqueMd5,
+            };
+        });
     }, [data]);
+
+    const gridSx = React.useMemo(
+        () => ({
+            border: 0,
+            "& .MuiDataGrid-columnHeaders": {
+                backgroundColor: isDarkMode ? "hsl(240 10% 10%)" : "hsl(210 20% 96%)",
+            },
+            "& .MuiDataGrid-row:hover": {
+                backgroundColor: isDarkMode ? "hsl(240 8% 16%)" : "hsl(210 40% 98%)",
+            },
+            "& .MuiDataGrid-cell, & .MuiDataGrid-columnHeader": {
+                borderColor: isDarkMode ? "hsl(240 6% 20%)" : "hsl(210 14% 89%)",
+            },
+            "& .MuiDataGrid-footerContainer": {
+                borderTop: "none",
+            },
+        }),
+        [isDarkMode]
+    );
+
+    const muiTheme = React.useMemo(
+        () =>
+            createTheme({
+                palette: {
+                    mode: isDarkMode ? "dark" : "light",
+                },
+            }),
+        [isDarkMode]
+    );
+
+    const consentBySiteColumns = React.useMemo<GridColDef[]>(
+        () => [
+            { field: "site_id", headerName: "Site ID", minWidth: 160, flex: 1 },
+            { field: "subject_ids", headerName: "Subject IDs", minWidth: 300, flex: 2 },
+            { field: "count", headerName: "Count", type: "number", minWidth: 110 },
+        ],
+        []
+    );
+
+    const consentBySiteRows = React.useMemo(
+        () =>
+            (data?.summary.subjects_missing_required_variables_by_site ?? []).map((row) => ({
+                id: row.site_id,
+                site_id: row.site_id,
+                subject_ids: row.subject_ids?.join(", ") || "N/A",
+                count: row.count,
+            })),
+        [data]
+    );
+
+    const newlyAddedColumns = React.useMemo<GridColDef[]>(
+        () => [
+            { field: "subject_id", headerName: "Subject ID", minWidth: 180, flex: 1 },
+            { field: "site_id", headerName: "Site ID", minWidth: 140, flex: 1 },
+            { field: "created_at", headerName: "Created At", minWidth: 220, flex: 1.5 },
+        ],
+        []
+    );
+
+    const newlyAddedRows = React.useMemo(
+        () =>
+            (data?.newly_added_last_night ?? []).map((row) => ({
+                id: `${row.subject_id}-${row.site_id}`,
+                subject_id: row.subject_id,
+                site_id: row.site_id,
+                created_at: asLocalDateTime(row.created_at),
+            })),
+        [data]
+    );
+
+    const warningColumns = React.useMemo<GridColDef[]>(
+        () => [
+            { field: "timestamp", headerName: "Timestamp", minWidth: 220, flex: 1.2 },
+            { field: "level", headerName: "Level", minWidth: 100 },
+            { field: "message", headerName: "Message", minWidth: 450, flex: 3 },
+            { field: "site_id", headerName: "Site", minWidth: 140, flex: 1 },
+            { field: "subject_id", headerName: "Subject", minWidth: 170, flex: 1 },
+            { field: "data_source_name", headerName: "Data Source", minWidth: 220, flex: 1.5 },
+        ],
+        []
+    );
+
+    const warningRows = React.useMemo(
+        () =>
+            (data?.last_warning_logs ?? []).map((row, index) => ({
+                id: `${row.timestamp}-${index}`,
+                timestamp: asLocalDateTime(row.timestamp),
+                level: row.level,
+                message: row.message || "N/A",
+                site_id: row.site_id || "N/A",
+                subject_id: row.subject_id || "N/A",
+                data_source_name: row.data_source_name || "N/A",
+            })),
+        [data]
+    );
 
     return (
         <div className="container mx-auto p-6 max-w-6xl flex flex-col gap-6">
@@ -188,32 +356,20 @@ export default function MonitoringPage() {
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
                         <h2 className="text-lg font-semibold mb-3">Subjects With Consent Date</h2>
-                        <table className="w-full text-sm border-collapse">
-                            <thead>
-                                <tr className="border-b">
-                                    <th className="text-left py-2">Site ID</th>
-                                    <th className="text-left py-2">Subject IDs</th>
-                                    <th className="text-left py-2">Count</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data.summary.subjects_missing_required_variables_by_site.length === 0 ? (
-                                    <tr>
-                                        <td className="py-2 text-muted-foreground" colSpan={3}>No records</td>
-                                    </tr>
-                                ) : (
-                                    data.summary.subjects_missing_required_variables_by_site.map((row) => (
-                                        <tr key={row.site_id} className="border-b">
-                                            <td className="py-2">{row.site_id}</td>
-                                            <td className="py-2">
-                                                {row.subject_ids?.join(", ") || "N/A"}
-                                            </td>
-                                            <td className="py-2">{row.count}</td>
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[320px] w-full">
+                                <DataGrid
+                                    rows={consentBySiteRows}
+                                    columns={consentBySiteColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooterSelectedRowCount
+                                    pageSizeOptions={[10, 25, 50]}
+                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                    localeText={{ noRowsLabel: "No records" }}
+                                />
+                            </div>
+                        </MuiThemeProvider>
                     </section>
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
@@ -223,76 +379,42 @@ export default function MonitoringPage() {
                                 Data pull metrics are unavailable in this environment because `data_pulls` schema does not contain the required subject mapping columns.
                             </p>
                         )}
-                        <table className="w-full text-sm border-collapse">
-                            <thead>
-                                <tr className="border-b">
-                                    <th className="text-left py-2">Subject ID</th>
-                                    <th className="text-left py-2">Total Pulls</th>
-                                    <th className="text-left py-2">Pulls With Unique file_md5</th>
-                                    {coverageSourceColumns.map((source) => (
-                                        <th key={source} className="text-left py-2">{source}</th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data.data_pull_coverage_by_subject.length === 0 ? (
-                                    <tr>
-                                        <td className="py-2 text-muted-foreground" colSpan={3 + coverageSourceColumns.length}>No records</td>
-                                    </tr>
-                                ) : (
-                                    data.data_pull_coverage_by_subject.map((row) => (
-                                        <tr key={row.subject_id} className="border-b align-top">
-                                            <td className="py-2 pr-3">{row.subject_id}</td>
-                                            <td className="py-2 pr-3">{row.total_pulls}</td>
-                                            <td className="py-2 pr-3">{row.pulls_with_unique_file_md5}</td>
-                                            {coverageSourceColumns.map((source) => {
-                                                const matchedTimes = row.recent_pull_items
-                                                    .filter((item) => normalizeDataSourceName(item.data_source_name) === source)
-                                                    .map((item) => item.pull_timestamp)
-                                                    .filter((value): value is string => Boolean(value))
-                                                    .sort((a, b) => b.localeCompare(a));
-
-                                                return (
-                                                    <td key={`${row.subject_id}-${source}`} className="py-2 pr-3">
-                                                        {matchedTimes.length === 0
-                                                            ? <span className="text-muted-foreground">N/A</span>
-                                                            : <span className="text-xs">{matchedTimes.slice(0, 3).map(asLocalDateTime).join(" | ")}</span>}
-                                                    </td>
-                                                );
-                                            })}
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[420px] w-full">
+                                <DataGrid
+                                    rows={coverageRows}
+                                    columns={coverageColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooterSelectedRowCount
+                                    pageSizeOptions={[10, 25, 50]}
+                                    initialState={{
+                                        pagination: {
+                                            paginationModel: { pageSize: 10, page: 0 },
+                                        },
+                                    }}
+                                    localeText={{ noRowsLabel: "No records" }}
+                                />
+                            </div>
+                        </MuiThemeProvider>
                     </section>
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
                         <h2 className="text-lg font-semibold mb-3">Newly Added Last Night</h2>
-                        <table className="w-full text-sm border-collapse">
-                            <thead>
-                                <tr className="border-b">
-                                    <th className="text-left py-2">Subject ID</th>
-                                    <th className="text-left py-2">Site ID</th>
-                                    <th className="text-left py-2">Created At</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data.newly_added_last_night.length === 0 ? (
-                                    <tr>
-                                        <td className="py-2 text-muted-foreground" colSpan={3}>No records</td>
-                                    </tr>
-                                ) : (
-                                    data.newly_added_last_night.map((row) => (
-                                        <tr key={`${row.subject_id}-${row.site_id}`} className="border-b">
-                                            <td className="py-2">{row.subject_id}</td>
-                                            <td className="py-2">{row.site_id}</td>
-                                            <td className="py-2">{asLocalDateTime(row.created_at)}</td>
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[320px] w-full">
+                                <DataGrid
+                                    rows={newlyAddedRows}
+                                    columns={newlyAddedColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooterSelectedRowCount
+                                    pageSizeOptions={[10, 25, 50]}
+                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                    localeText={{ noRowsLabel: "No records" }}
+                                />
+                            </div>
+                        </MuiThemeProvider>
                     </section>
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground">
@@ -329,36 +451,20 @@ export default function MonitoringPage() {
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
                         <h2 className="text-lg font-semibold mb-3">Last 20 Warning Logs</h2>
-                        <table className="w-full text-sm border-collapse">
-                            <thead>
-                                <tr className="border-b">
-                                    <th className="text-left py-2">Timestamp</th>
-                                    <th className="text-left py-2">Level</th>
-                                    <th className="text-left py-2">Message</th>
-                                    <th className="text-left py-2">Site</th>
-                                    <th className="text-left py-2">Subject</th>
-                                    <th className="text-left py-2">Data Source</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data.last_warning_logs.length === 0 ? (
-                                    <tr>
-                                        <td className="py-2 text-muted-foreground" colSpan={6}>No warning logs</td>
-                                    </tr>
-                                ) : (
-                                    data.last_warning_logs.map((row, index) => (
-                                        <tr key={`${row.timestamp}-${index}`} className="border-b align-top">
-                                            <td className="py-2 pr-3">{asLocalDateTime(row.timestamp)}</td>
-                                            <td className="py-2 pr-3">{row.level}</td>
-                                            <td className="py-2 pr-3">{row.message || "N/A"}</td>
-                                            <td className="py-2 pr-3">{row.site_id || "N/A"}</td>
-                                            <td className="py-2 pr-3">{row.subject_id || "N/A"}</td>
-                                            <td className="py-2">{row.data_source_name || "N/A"}</td>
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[360px] w-full">
+                                <DataGrid
+                                    rows={warningRows}
+                                    columns={warningColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooterSelectedRowCount
+                                    pageSizeOptions={[10, 20, 50]}
+                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                    localeText={{ noRowsLabel: "No warning logs" }}
+                                />
+                            </div>
+                        </MuiThemeProvider>
                     </section>
                 </>
             )}

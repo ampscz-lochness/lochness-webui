@@ -18,6 +18,7 @@ type PullDetailRow = {
     subject_id: string;
     data_source_name: string | null;
     pull_timestamp: string | null;
+    file_md5: string | null;
     has_file_md5: boolean;
 };
 
@@ -205,7 +206,7 @@ export async function GET(
     const sinceLastNightResult = await connection.query(sinceLastNightQuery, [projectId]);
 
     let pullCountsBySubject: Array<{ subject_id: string; total_pulls: number; pulls_with_unique_file_md5: number }> = [];
-    let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; has_file_md5: boolean }> = [];
+    let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; file_md5: string | null; has_file_md5: boolean }> = [];
     let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number }> = [];
 
     if (missingSubjectIds.length > 0 && hasDataPullSubjectColumn && dataPullTableSql) {
@@ -240,17 +241,27 @@ export async function GET(
                 : "false";
 
             const pullDetailsQuery = `
-                SELECT
+                WITH filtered AS (
+                    SELECT
+                        subject_id,
+                        ${pullSourceSelect} AS data_source_name,
+                        ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_timestamp,
+                        ${hasFileMd5Column ? "NULLIF(file_md5::text, '')" : "NULL::text"} AS file_md5,
+                        ${hasFileMd5Expr} AS has_file_md5
+                    FROM ${dataPullTableSql}
+                    WHERE subject_id = ANY($1::text[])
+                      ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                      ${hasFileMd5Column ? "AND COALESCE(file_md5::text, '') <> ''" : ""}
+                )
+                SELECT DISTINCT ON (subject_id, COALESCE(data_source_name, 'unknown'), file_md5)
                     subject_id,
-                    ${pullSourceSelect} AS data_source_name,
-                    ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_timestamp,
-                    ${hasFileMd5Expr} AS has_file_md5
-                FROM ${dataPullTableSql}
-                WHERE subject_id = ANY($1::text[])
-                  ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
-                  ${hasFileMd5Column ? "AND COALESCE(file_md5::text, '') <> ''" : ""}
-                ORDER BY ${quoteIdentifier(pullTimestampColumn)} DESC NULLS LAST
-                LIMIT 200
+                    data_source_name,
+                    pull_timestamp,
+                    file_md5,
+                    has_file_md5
+                FROM filtered
+                ORDER BY subject_id, COALESCE(data_source_name, 'unknown'), file_md5, pull_timestamp DESC NULLS LAST
+                LIMIT 2000
             `;
 
             const pullDetailsParams = hasDataPullProjectColumn ? [missingSubjectIds, projectId] : [missingSubjectIds];
@@ -259,6 +270,7 @@ export async function GET(
                 subject_id: row.subject_id,
                 data_source_name: row.data_source_name,
                 pull_timestamp: row.pull_timestamp,
+                file_md5: row.file_md5,
                 has_file_md5: row.has_file_md5,
             }));
 

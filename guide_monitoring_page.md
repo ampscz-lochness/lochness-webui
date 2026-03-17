@@ -57,17 +57,28 @@ Rules:
 For each consented subject, show:
 1. Total Pulls: total raw pull records.
 2. Pulls With Unique file_md5: count of distinct non-empty `file_md5`.
-3. Data source columns with recent pull timestamps.
+3. Modality coverage columns with user-friendly labels.
 
-Data source column normalization rule:
+Required column order and labels:
+1. REDCap
+2. EEG (SharePoint)
+3. MindLAMP
+4. MindLAMP QC (SharePoint)
+5. PennCNB (UPENN_recap)
+6. CANTAB
+7. Transcript (SharePoint)
+
+Data source normalization + mapping rule:
 1. Normalize site-specific source names by removing the prefix up to first underscore.
-2. Example:
-	1. `ProcanOR_cantab` -> `cantab`
-	2. `ProcanYA_cantab` -> `cantab`
+2. Map normalized values to the required modality columns.
+3. Examples:
+	1. `ProcanOR_cantab` -> `cantab` -> `CANTAB`
+	2. `ProcanYA_UPENN_recap` -> `UPENN_recap` -> `PennCNB (UPENN_recap)`
 
 Cell rendering rule:
-1. For each subject + normalized source column, show recent timestamps (most recent first).
-2. Show `N/A` when no records exist for that subject/source.
+1. For each subject + modality column, show the count of unique non-empty `file_md5` values.
+2. If there is exactly one unique pull, render `1` (do not render `N/A`).
+3. Show `N/A` only when count is 0.
 
 ### 4) Pull Trend Of Data Pull Counts Over Time
 Required metric:
@@ -125,6 +136,9 @@ Monitoring payload should include at minimum:
 2. Dates and timestamps must be human-readable.
 3. Missing values should render as `N/A`.
 4. Monitoring page must remain functional even when some optional pull fields are absent.
+5. Prefer `shadcn/ui` components for layout, controls, and section framing.
+6. For large tabular datasets (especially Data Pull Coverage), prefer `@mui/x-data-grid` for pagination, sizing, and row UX.
+7. All Data Grid surfaces must follow the app day/night toggle state (next-themes light/dark mode) so header, row hover, and borders remain readable in both themes.
 
 ## Validation Checklist
 1. `/monitoring` route resolves and loads monitoring page.

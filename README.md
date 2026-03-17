@@ -172,7 +172,87 @@ The production server also starts on port 3000 (or the next available port).
 
 ---
 
-## 8. Troubleshooting
+## 8. Running as a Linux Service (systemd)
+
+This sets the app to start automatically on boot and restart if it crashes.
+
+**8a. Build the production bundle first:**
+
+```bash
+cd /opt/lochness-webui   # or wherever you deployed the app
+npm install --omit=dev
+npm run build
+```
+
+**8b. Create the systemd unit file:**
+
+```bash
+sudo nano /etc/systemd/system/lochness-webui.service
+```
+
+Paste the following (adjust `User`, `WorkingDirectory`, and `ExecStart` to match your deployment path and system user):
+
+```ini
+[Unit]
+Description=Lochness WebUI
+After=network.target
+
+[Service]
+Type=simple
+User=lochness
+WorkingDirectory=/opt/lochness-webui
+EnvironmentFile=/opt/lochness-webui/.env
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+> **Note:** Replace `User=lochness` with the Linux user that owns the app files (never `root`). Replace `/opt/lochness-webui` with your actual deployment path.
+
+**8c. Enable and start the service:**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable lochness-webui   # auto-start on reboot
+sudo systemctl start lochness-webui
+```
+
+**8d. Check status and logs:**
+
+```bash
+# Check if running
+sudo systemctl status lochness-webui
+
+# Follow live logs
+sudo journalctl -u lochness-webui -f
+```
+
+**8e. Common service management commands:**
+
+```bash
+sudo systemctl stop lochness-webui      # stop the service
+sudo systemctl restart lochness-webui   # restart (e.g. after a code update)
+sudo systemctl disable lochness-webui   # remove from auto-start
+```
+
+**After a code update**, rebuild and restart:
+
+```bash
+cd /opt/lochness-webui
+git pull
+npm install --omit=dev
+npm run build
+sudo systemctl restart lochness-webui
+```
+
+---
+
+## 9. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
