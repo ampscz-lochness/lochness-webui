@@ -3,11 +3,16 @@
 // https://www.better-auth.com/docs/authentication/email-password
 
 import { betterAuth } from "better-auth";
+import { admin } from "better-auth/plugins";
+
 
 import { getConnection } from "@/lib/db";
 
 export const auth = betterAuth({
     database: getConnection(),
+    plugins: [
+        admin(),
+    ],
     emailAndPassword: {
         enabled: true,
         minPasswordLength: 2,

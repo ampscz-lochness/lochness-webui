@@ -9,13 +9,19 @@ interface ProtectPageOptions {
     message?: string;
     description?: string;
     afterLogin?: string;
+    /** Require a specific user role (e.g. "admin"). Redirects to `unauthorizedRedirectTo` if the logged-in user lacks this role. */
+    role?: string;
+    /** Where to send a logged-in user who lacks the required role. Defaults to "/". */
+    unauthorizedRedirectTo?: string;
 }
 
 const useProtectPage = ({
     redirectTo = "/auth/login",
     message = "You must be logged in to view this page",
     description = "Redirecting to login page...",
-    afterLogin: afterLoginProp
+    afterLogin: afterLoginProp,
+    role,
+    unauthorizedRedirectTo = "/",
 }: ProtectPageOptions = {}) => {
     const router = useRouter();
     const pathname = usePathname();
@@ -39,8 +45,19 @@ const useProtectPage = ({
             // Cleanup function to clear the timeout if the component unmounts
             // or dependencies change before the timeout finishes
             return () => clearTimeout(timer);
+        } else if (role && (session.user as { role?: string | null }).role !== role) {
+            toast.error("Access denied", {
+                duration: 5000,
+                description: "You don't have permission to view this page.",
+            });
+
+            const timer = setTimeout(() => {
+                router.push(unauthorizedRedirectTo);
+            }, 100);
+
+            return () => clearTimeout(timer);
         }
-    }, [session, message, description, redirectTo, afterLogin, router]);
+    }, [session, message, description, redirectTo, afterLogin, role, unauthorizedRedirectTo, router]);
 };
 
 export default useProtectPage;
