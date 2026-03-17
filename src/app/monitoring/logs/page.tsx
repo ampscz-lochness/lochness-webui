@@ -165,7 +165,18 @@ export default function MonitoringPage() {
             headerName: column.label,
             type: "number",
             minWidth: 180,
-            valueFormatter: (value) => (typeof value === "number" && value > 0 ? value : "N/A"),
+            renderCell: (params) => {
+                const value = typeof params.value === "number" ? params.value : 0;
+                if (value > 0) {
+                    return <span className="text-xs font-medium">{value}</span>;
+                }
+
+                return (
+                    <span className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-500/50 dark:bg-amber-900/30 dark:text-amber-300">
+                        N/A
+                    </span>
+                );
+            },
         }));
 
         return [...baseColumns, ...modalityColumns];
