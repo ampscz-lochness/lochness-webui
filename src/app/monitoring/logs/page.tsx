@@ -4,7 +4,7 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { ThemeProvider as MuiThemeProvider, createTheme } from "@mui/material/styles";
 import { useTheme } from "next-themes";
 
-import { BarChart3, RefreshCcw, Terminal } from "lucide-react";
+import { BarChart3, FileDown, RefreshCcw, Terminal } from "lucide-react";
 import { toast } from "sonner";
 
 import { Heading } from "@/components/heading";
@@ -16,7 +16,13 @@ type MonitoringResponse = {
     project_id: string;
     summary: {
         subjects_missing_required_variables_count: number;
-        subjects_missing_required_variables_by_site: Array<{ site_id: string; count: number; subject_ids: string[] }>;
+        subjects_missing_required_variables_by_site: Array<{
+            site_id: string;
+            count: number;
+            subject_ids: string[];
+            mindlamp_ids: string[];
+            cantab_ids: string[];
+        }>;
         newly_added_last_night_count: number;
     };
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
@@ -174,6 +180,94 @@ type ActivityBucket = {
     segments: TrendSegment[];
 };
 
+type PrintTableColumn = {
+    key: string;
+    label: string;
+    className?: string;
+};
+
+type PrintTableRow = Record<string, React.ReactNode> & { id: string };
+
+type PrintMetricCardRow = {
+    id: string;
+    title: string;
+    subtitle?: string;
+    metrics: Array<{ label: string; value: React.ReactNode }>;
+};
+
+function PrintTable({
+    columns,
+    rows,
+    emptyLabel,
+}: {
+    columns: PrintTableColumn[];
+    rows: PrintTableRow[];
+    emptyLabel: string;
+}) {
+    return (
+        <div className="monitoring-print-only rounded-md border border-slate-300 bg-white p-3">
+            {rows.length === 0 ? (
+                <p className="text-sm text-slate-600">{emptyLabel}</p>
+            ) : (
+                <table className="w-full table-fixed border-collapse text-[11px] leading-4 text-slate-900">
+                    <thead>
+                        <tr>
+                            {columns.map((column) => (
+                                <th
+                                    key={column.key}
+                                    className={`border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold ${column.className ?? ""}`}
+                                >
+                                    {column.label}
+                                </th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows.map((row) => (
+                            <tr key={row.id}>
+                                {columns.map((column) => (
+                                    <td key={column.key} className="border border-slate-300 px-2 py-1 align-top break-words">
+                                        {row[column.key] ?? "N/A"}
+                                    </td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
+        </div>
+    );
+}
+
+function PrintMetricCards({ rows, emptyLabel }: { rows: PrintMetricCardRow[]; emptyLabel: string }) {
+    return (
+        <div className="monitoring-print-only">
+            {rows.length === 0 ? (
+                <div className="rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-600">{emptyLabel}</div>
+            ) : (
+                <div className="grid gap-3">
+                    {rows.map((row) => (
+                        <article key={row.id} className="rounded-md border border-slate-300 bg-white p-3 text-slate-900">
+                            <div className="mb-2 border-b border-slate-200 pb-2">
+                                <h3 className="text-sm font-semibold">{row.title}</h3>
+                                {row.subtitle ? <p className="text-[11px] text-slate-600">{row.subtitle}</p> : null}
+                            </div>
+                            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] leading-4">
+                                {row.metrics.map((metric) => (
+                                    <div key={metric.label} className="break-inside-avoid">
+                                        <dt className="font-medium text-slate-600">{metric.label}</dt>
+                                        <dd className="mt-0.5 break-words">{metric.value}</dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </article>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 const mapDataSourceToCoverageModality = (value: string | null | undefined): CoverageModalityKey | null => {
     const normalized = normalizeDataSourceName(value).toLowerCase();
 
@@ -235,6 +329,7 @@ export default function MonitoringPage() {
     const [loading, setLoading] = React.useState(true);
     const [activeTrendTab, setActiveTrendTab] = React.useState<string>("all");
     const [trendSubjectFilter, setTrendSubjectFilter] = React.useState("");
+    const [pdfGeneratedAt, setPdfGeneratedAt] = React.useState<string | null>(null);
 
     const fetchMonitoring = React.useCallback(async (requestedProjectId: string) => {
         setLoading(true);
@@ -573,6 +668,8 @@ export default function MonitoringPage() {
         () => [
             { field: "site_id", headerName: "Site ID", minWidth: 160, flex: 1 },
             { field: "subject_ids", headerName: "Subject IDs", minWidth: 300, flex: 2 },
+            { field: "mindlamp_ids", headerName: "MindLAMP IDs", minWidth: 220, flex: 1.5 },
+            { field: "cantab_ids", headerName: "CANTAB IDs", minWidth: 220, flex: 1.5 },
             { field: "count", headerName: "Count", type: "number", minWidth: 110 },
         ],
         []
@@ -584,6 +681,8 @@ export default function MonitoringPage() {
                 id: row.site_id,
                 site_id: row.site_id,
                 subject_ids: row.subject_ids?.join(", ") || "N/A",
+                mindlamp_ids: row.mindlamp_ids?.join(", ") || "N/A",
+                cantab_ids: row.cantab_ids?.join(", ") || "N/A",
                 count: row.count,
             })),
         [data]
@@ -707,6 +806,15 @@ export default function MonitoringPage() {
         [data]
     );
 
+    const handleSavePdf = React.useCallback(() => {
+        const generatedAt = new Date().toLocaleString();
+        setPdfGeneratedAt(generatedAt);
+
+        window.setTimeout(() => {
+            window.print();
+        }, 0);
+    }, []);
+
     const last48HourPullActivity = React.useMemo(() => {
         const end = new Date();
         end.setMinutes(0, 0, 0);
@@ -799,11 +907,94 @@ export default function MonitoringPage() {
         });
     }, [last48HourPullActivity.buckets]);
 
+    const consentPrintRows = React.useMemo<PrintTableRow[]>(
+        () => consentBySiteRows.map((row) => ({
+            id: String(row.id),
+            site_id: row.site_id,
+            count: row.count,
+            subject_ids: row.subject_ids,
+            mindlamp_ids: row.mindlamp_ids,
+            cantab_ids: row.cantab_ids,
+        })),
+        [consentBySiteRows]
+    );
+
+    const newlyAddedPrintRows = React.useMemo<PrintTableRow[]>(
+        () => newlyAddedRows.map((row) => ({
+            id: String(row.id),
+            subject_id: row.subject_id,
+            site_id: row.site_id,
+            created_at: row.created_at,
+        })),
+        [newlyAddedRows]
+    );
+
+    const latestDataPullPrintRows = React.useMemo<PrintTableRow[]>(
+        () => latestDataPullRows.map((row) => ({
+            id: String(row.id),
+            pull_timestamp: row.pull_timestamp,
+            file_name: row.file_name,
+            site_id: row.site_id,
+            subject_id: row.subject_id,
+            data_source_name: row.data_source_name,
+        })),
+        [latestDataPullRows]
+    );
+
+    const warningPrintRows = React.useMemo<PrintTableRow[]>(
+        () => warningRows.map((row) => ({
+            id: String(row.id),
+            timestamp: row.timestamp,
+            level: row.level,
+            message: row.message,
+            site_id: row.site_id,
+            subject_id: row.subject_id,
+            data_source_name: row.data_source_name,
+        })),
+        [warningRows]
+    );
+
+    const uniqueFilePathPrintCards = React.useMemo<PrintMetricCardRow[]>(
+        () => uniqueFilePathRows.map((row) => ({
+            id: String(row.id),
+            title: String(row.subject_id),
+            subtitle: "Unique file paths by data source",
+            metrics: COVERAGE_MODALITY_COLUMNS.map((column) => ({
+                label: column.label,
+                value: row[column.key],
+            })),
+        })),
+        [uniqueFilePathRows]
+    );
+
+    const coveragePrintCards = React.useMemo<PrintMetricCardRow[]>(
+        () => coverageRows.map((row) => ({
+            id: String(row.id),
+            title: String(row.subject_id),
+            subtitle: `All Pull Records: ${row.total_pulls} | Unique Files (MD5): ${row.pulls_with_unique_file_md5}`,
+            metrics: COVERAGE_MODALITY_COLUMNS.map((column) => ({
+                label: column.label,
+                value: row[column.key],
+            })),
+        })),
+        [coverageRows]
+    );
+
     return (
-        <div className="container mx-auto p-6 max-w-6xl flex flex-col gap-6">
+        <div className="monitoring-print-root container mx-auto flex max-w-6xl flex-col gap-6 p-6">
+            <section className="monitoring-print-only rounded-lg border bg-white p-6 text-black">
+                <div className="mb-4 border-b pb-4">
+                    <h1 className="text-2xl font-semibold">Lochness Monitoring Report</h1>
+                    <div className="mt-2 grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
+                        <p><span className="font-medium">Project:</span> {projectId}</p>
+                        <p><span className="font-medium">Generated:</span> {pdfGeneratedAt ?? new Date().toLocaleString()}</p>
+                        <p><span className="font-medium">Route:</span> /monitoring/logs</p>
+                    </div>
+                </div>
+            </section>
             <Heading icon={monitoringIcon} title="Monitoring" />
 
-            <div className="border rounded-lg p-4 bg-card text-card-foreground">
+            <div className="monitoring-print-hide border rounded-lg p-4 bg-card text-card-foreground">
                 <div className="flex flex-col md:flex-row md:items-end gap-3">
                     <div className="flex-1">
                         <label htmlFor="project-id" className="text-sm font-medium block mb-1">Project ID</label>
@@ -823,6 +1014,16 @@ export default function MonitoringPage() {
                         <RefreshCcw className="h-4 w-4" />
                         Load Monitoring
                     </Button>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleSavePdf}
+                        disabled={loading || !data}
+                        className="gap-2"
+                    >
+                        <FileDown className="h-4 w-4" />
+                        Save as PDF
+                    </Button>
                 </div>
             </div>
 
@@ -836,9 +1037,9 @@ export default function MonitoringPage() {
                 </div>
             ) : (
                 <>
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <h2 className="text-lg font-semibold mb-3">Summary</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                        <div className="monitoring-print-hide grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                             <div className="border rounded-md p-3">
                                 <p className="text-muted-foreground">Subjects With Consent Date</p>
                                 <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_count}</p>
@@ -852,9 +1053,33 @@ export default function MonitoringPage() {
                                 <p className="text-2xl font-semibold">{data.summary.newly_added_last_night_count}</p>
                             </div>
                         </div>
+                        <div className="monitoring-print-only rounded-md border border-slate-300 bg-white p-3">
+                            <table className="w-full table-fixed border-collapse text-[11px] leading-4 text-slate-900">
+                                <thead>
+                                    <tr>
+                                        <th className="w-[58%] border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold">Metric</th>
+                                        <th className="w-[42%] border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold">Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td className="border border-slate-300 px-2 py-1">Subjects With Consent Date</td>
+                                        <td className="border border-slate-300 px-2 py-1">{data.summary.subjects_missing_required_variables_count}</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="border border-slate-300 px-2 py-1">Sites With Any Consented Subject</td>
+                                        <td className="border border-slate-300 px-2 py-1">{data.summary.subjects_missing_required_variables_by_site.length}</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="border border-slate-300 px-2 py-1">Newly Added Subjects Last Night</td>
+                                        <td className="border border-slate-300 px-2 py-1">{data.summary.newly_added_last_night_count}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                             <div>
                                 <h2 className="text-lg font-semibold">Latest Data Pulls, Last 48 Hours</h2>
@@ -974,108 +1199,151 @@ export default function MonitoringPage() {
                         )}
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Subjects With Consent Date</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[320px] w-full">
-                                <DataGrid
-                                    rows={consentBySiteRows}
-                                    columns={consentBySiteColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[320px] w-full">
+                                    <DataGrid
+                                        rows={consentBySiteRows}
+                                        columns={consentBySiteColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "site_id", label: "Site ID", className: "w-[9%]" },
+                                { key: "count", label: "Count", className: "w-[7%]" },
+                                { key: "subject_ids", label: "Subject IDs", className: "w-[36%]" },
+                                { key: "mindlamp_ids", label: "MindLAMP IDs", className: "w-[24%]" },
+                                { key: "cantab_ids", label: "CANTAB IDs", className: "w-[24%]" },
+                            ]}
+                            rows={consentPrintRows}
+                            emptyLabel="No records"
+                        />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Newly Added Subjects</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[320px] w-full">
-                                <DataGrid
-                                    rows={newlyAddedRows}
-                                    columns={newlyAddedColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[320px] w-full">
+                                    <DataGrid
+                                        rows={newlyAddedRows}
+                                        columns={newlyAddedColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "subject_id", label: "Subject ID", className: "w-[28%]" },
+                                { key: "site_id", label: "Site ID", className: "w-[16%]" },
+                                { key: "created_at", label: "Created At", className: "w-[56%]" },
+                            ]}
+                            rows={newlyAddedPrintRows}
+                            emptyLabel="No records"
+                        />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Unique File Paths by Data Source</h2>
                         {data.metadata?.notes?.files_available === false && (
                             <p className="text-xs text-muted-foreground mb-3">
                                 File path metrics are unavailable because the `files` schema does not contain required source/path columns.
                             </p>
                         )}
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[220px] w-full">
-                                <DataGrid
-                                    rows={uniqueFilePathRows}
-                                    columns={uniqueFilePathColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooter
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[220px] w-full">
+                                    <DataGrid
+                                        rows={uniqueFilePathRows}
+                                        columns={uniqueFilePathColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooter
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintMetricCards rows={uniqueFilePathPrintCards} emptyLabel="No file path metrics" />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Data Pull Coverage</h2>
                         {data.metadata?.notes?.data_pulls_available === false && (
                             <p className="text-xs text-muted-foreground mb-3">
                                 Data pull metrics are unavailable in this environment because `data_pulls` schema does not contain the required subject mapping columns.
                             </p>
                         )}
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[420px] w-full">
-                                <DataGrid
-                                    rows={coverageRows}
-                                    columns={coverageColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{
-                                        pagination: {
-                                            paginationModel: { pageSize: 10, page: 0 },
-                                        },
-                                    }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[420px] w-full">
+                                    <DataGrid
+                                        rows={coverageRows}
+                                        columns={coverageColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{
+                                            pagination: {
+                                                paginationModel: { pageSize: 10, page: 0 },
+                                            },
+                                        }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintMetricCards rows={coveragePrintCards} emptyLabel="No records" />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Latest 200 data pulls</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[360px] w-full">
-                                <DataGrid
-                                    rows={latestDataPullRows}
-                                    columns={latestDataPullColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 20, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No data pulls" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[360px] w-full">
+                                    <DataGrid
+                                        rows={latestDataPullRows}
+                                        columns={latestDataPullColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 20, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No data pulls" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "pull_timestamp", label: "Pull Timestamp", className: "w-[20%]" },
+                                { key: "file_name", label: "File Name", className: "w-[28%]" },
+                                { key: "site_id", label: "Site", className: "w-[10%]" },
+                                { key: "subject_id", label: "Subject", className: "w-[16%]" },
+                                { key: "data_source_name", label: "Data Source", className: "w-[26%]" },
+                            ]}
+                            rows={latestDataPullPrintRows}
+                            emptyLabel="No data pulls"
+                        />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <div className="flex items-center gap-2 mb-3">
                             <BarChart3 className="h-5 w-5" />
                             <h2 className="text-lg font-semibold">Pull Trend (daily, pulls with unique file_md5, newest first)</h2>
@@ -1226,22 +1494,36 @@ export default function MonitoringPage() {
                         </div>
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Last 20 Warning Logs</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[360px] w-full">
-                                <DataGrid
-                                    rows={warningRows}
-                                    columns={warningColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 20, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No warning logs" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[360px] w-full">
+                                    <DataGrid
+                                        rows={warningRows}
+                                        columns={warningColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 20, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No warning logs" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "timestamp", label: "Timestamp", className: "w-[15%]" },
+                                { key: "level", label: "Level", className: "w-[8%]" },
+                                { key: "message", label: "Message", className: "w-[39%]" },
+                                { key: "site_id", label: "Site", className: "w-[8%]" },
+                                { key: "subject_id", label: "Subject", className: "w-[12%]" },
+                                { key: "data_source_name", label: "Data Source", className: "w-[18%]" },
+                            ]}
+                            rows={warningPrintRows}
+                            emptyLabel="No warning logs"
+                        />
                     </section>
                 </>
             )}

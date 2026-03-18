@@ -145,3 +145,82 @@
     --sidebar-ring: 217.2 91.2% 59.8%;
   }
 }
+
+.monitoring-print-only {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: auto;
+    margin: 0.5in;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #111 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .monitoring-print-root,
+  .monitoring-print-root * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .monitoring-print-root,
+  .monitoring-print-root * {
+    visibility: visible;
+  }
+
+  .monitoring-print-root {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-width: none !important;
+    padding: 0 !important;
+    background: #fff !important;
+    color: #111 !important;
+  }
+
+  .monitoring-print-hide {
+    display: none !important;
+  }
+
+  .monitoring-print-only {
+    display: block !important;
+  }
+
+  .monitoring-print-section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none !important;
+  }
+
+  .monitoring-print-grid {
+    overflow: visible !important;
+  }
+
+  .monitoring-print-only table {
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  .monitoring-print-only th,
+  .monitoring-print-only td {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    hyphens: auto;
+  }
+
+  .monitoring-print-only article {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
