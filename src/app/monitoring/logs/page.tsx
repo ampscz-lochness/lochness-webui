@@ -128,6 +128,21 @@ const COVERAGE_MODALITY_COLUMNS = [
 
 type CoverageModalityKey = (typeof COVERAGE_MODALITY_COLUMNS)[number]["key"];
 
+type TrendSegment = {
+    key: string;
+    label: string;
+    count: number;
+    color: string;
+};
+
+type TrendPoint = {
+    day: string;
+    pulls_with_unique_file_md5: number;
+    is_consent_date: boolean;
+    file_paths: string[];
+    segments?: TrendSegment[];
+};
+
 const mapDataSourceToCoverageModality = (value: string | null | undefined): CoverageModalityKey | null => {
     const normalized = normalizeDataSourceName(value).toLowerCase();
 
@@ -157,6 +172,23 @@ const COVERAGE_MODALITY_LABEL_BY_KEY: Record<CoverageModalityKey, string> = COVE
         transcript_sharepoint: "Transcript (SharePoint)",
     }
 );
+
+const TREND_MODALITY_COLOR_BY_KEY: Record<CoverageModalityKey, string> = {
+    redcap: "#f59e0b",
+    eeg_sharepoint: "#0ea5e9",
+    mindlamp: "#10b981",
+    mindlamp_qc_sharepoint: "#ec4899",
+    penncnb: "#6366f1",
+    cantab: "#f97316",
+    transcript_sharepoint: "#14b8a6",
+};
+
+const UNCLASSIFIED_TREND_SEGMENT: TrendSegment = {
+    key: "unclassified",
+    label: "Unclassified",
+    count: 0,
+    color: "#94a3b8",
+};
 
 const toGroupedDataSourceLabel = (value: string | null | undefined): string => {
     const modality = mapDataSourceToCoverageModality(value);
@@ -225,19 +257,77 @@ export default function MonitoringPage() {
         }
     }, [activeTrendTab, trendTabOptions]);
 
+    const trendBreakdownBySubjectDay = React.useMemo(() => {
+        const grouped = new Map<string, Record<CoverageModalityKey, number>>();
+
+        for (const row of data?.data_pull_trend_by_subject_and_modality ?? []) {
+            if (!row.modality_key || !COVERAGE_MODALITY_COLUMNS.some((column) => column.key === row.modality_key)) {
+                continue;
+            }
+
+            const dayKey = asDateKey(row.day) ?? row.day;
+            const compositeKey = `${row.subject_id}::${dayKey}`;
+
+            if (!grouped.has(compositeKey)) {
+                grouped.set(compositeKey, {
+                    redcap: 0,
+                    eeg_sharepoint: 0,
+                    mindlamp: 0,
+                    mindlamp_qc_sharepoint: 0,
+                    penncnb: 0,
+                    cantab: 0,
+                    transcript_sharepoint: 0,
+                });
+            }
+
+            const counts = grouped.get(compositeKey);
+            if (!counts) continue;
+
+            const modalityKey = row.modality_key as CoverageModalityKey;
+            counts[modalityKey] += row.pulls_with_unique_file_md5;
+        }
+
+        const segmentsByKey = new Map<string, TrendSegment[]>();
+
+        for (const [compositeKey, counts] of grouped.entries()) {
+            const segments = COVERAGE_MODALITY_COLUMNS
+                .map((column) => ({
+                    key: column.key,
+                    label: column.label,
+                    count: counts[column.key],
+                    color: TREND_MODALITY_COLOR_BY_KEY[column.key],
+                }))
+                .filter((segment) => segment.count > 0);
+
+            segmentsByKey.set(compositeKey, segments);
+        }
+
+        return segmentsByKey;
+    }, [data]);
+
     const trendBySubject = React.useMemo(() => {
-        const grouped = new Map<string, Array<{ day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>>();
+        const grouped = new Map<string, TrendPoint[]>();
 
         if (activeTrendTab === "all") {
             for (const row of data?.data_pull_trend_by_subject ?? []) {
                 if (!grouped.has(row.subject_id)) {
                     grouped.set(row.subject_id, []);
                 }
+
+                const dayKey = asDateKey(row.day) ?? row.day;
+                const compositeKey = `${row.subject_id}::${dayKey}`;
+                const knownSegments = trendBreakdownBySubjectDay.get(compositeKey) ?? [];
+                const knownCount = knownSegments.reduce((sum, segment) => sum + segment.count, 0);
+                const unclassifiedCount = Math.max(0, row.pulls_with_unique_file_md5 - knownCount);
+
                 grouped.get(row.subject_id)?.push({
                     day: row.day,
                     pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
                     is_consent_date: row.is_consent_date,
                     file_paths: row.file_paths,
+                    segments: unclassifiedCount > 0
+                        ? [...knownSegments, { ...UNCLASSIFIED_TREND_SEGMENT, count: unclassifiedCount }]
+                        : knownSegments,
                 });
             }
         } else {
@@ -260,7 +350,7 @@ export default function MonitoringPage() {
         }
 
         return grouped;
-    }, [activeTrendTab, data]);
+    }, [activeTrendTab, data, trendBreakdownBySubjectDay]);
 
     const highestTrendCount = React.useMemo(() => {
         const allValues = [...trendBySubject.values()].flatMap((rows) => rows.map((row) => row.pulls_with_unique_file_md5));
@@ -743,6 +833,29 @@ export default function MonitoringPage() {
                                 ))}
                             </TabsList>
                         </Tabs>
+                        {activeTrendTab === "all" && (
+                            <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
+                                <span>Segment colors show each data type&apos;s share of the day&apos;s total.</span>
+                                {COVERAGE_MODALITY_COLUMNS.map((column) => (
+                                    <span key={column.key} className="inline-flex items-center gap-2">
+                                        <span
+                                            className="h-2.5 w-2.5 rounded-sm border border-black/10"
+                                            style={{ backgroundColor: TREND_MODALITY_COLOR_BY_KEY[column.key] }}
+                                            aria-hidden="true"
+                                        />
+                                        <span>{column.label}</span>
+                                    </span>
+                                ))}
+                                <span className="inline-flex items-center gap-2">
+                                    <span
+                                        className="h-2.5 w-2.5 rounded-sm border border-black/10"
+                                        style={{ backgroundColor: UNCLASSIFIED_TREND_SEGMENT.color }}
+                                        aria-hidden="true"
+                                    />
+                                    <span>{UNCLASSIFIED_TREND_SEGMENT.label}</span>
+                                </span>
+                            </div>
+                        )}
                         <div className="space-y-4">
                             {[...trendBySubject.entries()].length === 0 ? (
                                 <p className="text-sm text-muted-foreground">No trend data for this modality</p>
@@ -763,6 +876,8 @@ export default function MonitoringPage() {
                                                     const dayKey = asDateKey(point.day);
                                                     const isConsentDate = Boolean(point.is_consent_date);
                                                     const hasFiles = point.file_paths.length > 0;
+                                                    const stackedSegments = point.segments?.filter((segment) => segment.count > 0) ?? [];
+                                                    const showStackedSegments = activeTrendTab === "all" && stackedSegments.length > 0;
                                                     return (
                                                         <details key={`${subjectId}-${point.day}`} className="space-y-2">
                                                             <summary className="list-none">
@@ -771,10 +886,25 @@ export default function MonitoringPage() {
                                                                     <div
                                                                         className={`h-3 overflow-hidden rounded bg-muted ${isConsentDate ? "ring-1 ring-sky-500/70" : ""}`}
                                                                     >
-                                                                        <div
-                                                                            className={`h-full ${isConsentDate ? "bg-sky-500" : "bg-emerald-500"}`}
-                                                                            style={{ width: `${widthPercent}%` }}
-                                                                        />
+                                                                        <div className="flex h-full overflow-hidden rounded" style={{ width: `${widthPercent}%` }}>
+                                                                            {showStackedSegments ? (
+                                                                                stackedSegments.map((segment) => (
+                                                                                    <div
+                                                                                        key={`${subjectId}-${point.day}-${segment.key}`}
+                                                                                        className="h-full first:rounded-l last:rounded-r"
+                                                                                        style={{
+                                                                                            width: `${(segment.count / point.pulls_with_unique_file_md5) * 100}%`,
+                                                                                            backgroundColor: segment.color,
+                                                                                        }}
+                                                                                        title={`${segment.label}: ${segment.count}`}
+                                                                                    />
+                                                                                ))
+                                                                            ) : (
+                                                                                <div
+                                                                                    className={`h-full w-full ${isConsentDate ? "bg-sky-500" : "bg-emerald-500"}`}
+                                                                                />
+                                                                            )}
+                                                                        </div>
                                                                     </div>
                                                                     {hasFiles ? (
                                                                         <span className="inline-flex w-fit cursor-pointer items-center rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted">
