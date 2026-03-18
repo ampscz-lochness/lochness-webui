@@ -8,6 +8,11 @@ type SubjectRow = {
     created_at: string | null;
 };
 
+type ConsentDateRow = {
+    subject_id: string;
+    consent_date: string | null;
+};
+
 type PullCountRow = {
     subject_id: string;
     total_pulls: string;
@@ -19,6 +24,7 @@ type PullDetailRow = {
     data_source_name: string | null;
     pull_timestamp: string | null;
     file_md5: string | null;
+    file_path: string | null;
     has_file_md5: boolean;
 };
 
@@ -26,6 +32,15 @@ type TrendRow = {
     subject_id: string;
     day: string;
     pulls_with_unique_file_md5: string;
+    is_consent_date: boolean;
+};
+
+type TrendByModalityRow = {
+    subject_id: string;
+    modality_key: string | null;
+    day: string;
+    pulls_with_unique_file_md5: string;
+    is_consent_date: boolean;
 };
 
 type WarningRow = {
@@ -224,9 +239,29 @@ export async function GET(
 
     const sinceLastNightResult = await connection.query(sinceLastNightQuery, [projectId]);
 
+    let consentDatesBySubject: Array<{ subject_id: string; consent_date: string | null }> = [];
+    if (missingSubjectIds.length > 0) {
+        const consentDatesQuery = `
+            SELECT
+                subject_id,
+                NULLIF(subject_metadata->>'consent_date', '')::text AS consent_date
+            FROM public.subjects
+            WHERE project_id = $1
+              AND subject_id = ANY($2::text[])
+            ORDER BY subject_id
+        `;
+
+        const consentDatesResult = await connection.query(consentDatesQuery, [projectId, missingSubjectIds]);
+        consentDatesBySubject = (consentDatesResult.rows as ConsentDateRow[]).map((row) => ({
+            subject_id: row.subject_id,
+            consent_date: row.consent_date,
+        }));
+    }
+
     let pullCountsBySubject: Array<{ subject_id: string; total_pulls: number; pulls_with_unique_file_md5: number }> = [];
-    let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; file_md5: string | null; has_file_md5: boolean }> = [];
-    let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number }> = [];
+    let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; file_md5: string | null; file_path: string | null; has_file_md5: boolean }> = [];
+    let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }> = [];
+    let pullTrendBySubjectAndModality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }> = [];
     let uniqueFilePathsByDataSource: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }> = [];
 
     if (missingSubjectIds.length > 0 && hasDataPullSubjectColumn && dataPullTableSql) {
@@ -267,6 +302,7 @@ export async function GET(
                         ${pullSourceSelect} AS data_source_name,
                         ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_timestamp,
                         ${hasFileMd5Column ? "NULLIF(file_md5::text, '')" : "NULL::text"} AS file_md5,
+                        ${pullFilePathColumn ? `NULLIF(${quoteIdentifier(pullFilePathColumn)}::text, '')` : "NULL::text"} AS file_path,
                         ${hasFileMd5Expr} AS has_file_md5
                     FROM ${dataPullTableSql}
                     WHERE subject_id = ANY($1::text[])
@@ -278,6 +314,7 @@ export async function GET(
                     data_source_name,
                     pull_timestamp,
                     file_md5,
+                    file_path,
                     has_file_md5
                 FROM filtered
                 ORDER BY subject_id, COALESCE(data_source_name, 'unknown'), file_md5, pull_timestamp DESC NULLS LAST
@@ -291,33 +328,193 @@ export async function GET(
                 data_source_name: row.data_source_name,
                 pull_timestamp: row.pull_timestamp,
                 file_md5: row.file_md5,
+                file_path: row.file_path,
                 has_file_md5: row.has_file_md5,
             }));
 
-            const trendCountExpr = hasFileMd5Column
-                ? `COUNT(DISTINCT NULLIF(file_md5::text, ''))`
-                : "COUNT(*)";
-
             const pullTrendQuery = `
+                WITH consent_by_subject AS (
+                    SELECT
+                        subject_id,
+                        CASE
+                            WHEN NULLIF(subject_metadata->>'consent_date', '') ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                                THEN NULLIF(subject_metadata->>'consent_date', '')::date
+                            WHEN NULLIF(subject_metadata->>'consent_date', '') ~ '^\\d{4}-\\d{2}-\\d{2}[ T].*$'
+                                THEN NULLIF(subject_metadata->>'consent_date', '')::timestamptz::date
+                            WHEN NULLIF(subject_metadata->>'consent_date', '') ~ '^\\d{1,2}/\\d{1,2}/\\d{4}$'
+                                THEN to_date(NULLIF(subject_metadata->>'consent_date', ''), 'MM/DD/YYYY')
+                            ELSE NULL
+                        END AS consent_date
+                    FROM public.subjects
+                    WHERE project_id = $2
+                      AND subject_id = ANY($1::text[])
+                ),
+                trend_by_subject AS (
+                    ${hasFileMd5Column ? `
+                    WITH first_seen_md5 AS (
+                        SELECT
+                            subject_id,
+                            MIN(date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date) AS day,
+                            NULLIF(file_md5::text, '') AS file_md5
+                        FROM ${dataPullTableSql}
+                        WHERE subject_id = ANY($1::text[])
+                          ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                          AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                          AND COALESCE(file_md5::text, '') <> ''
+                        GROUP BY subject_id, NULLIF(file_md5::text, '')
+                    )
+                    SELECT
+                        subject_id,
+                        day,
+                        COUNT(*)::int AS pulls_with_unique_file_md5
+                    FROM first_seen_md5
+                    GROUP BY subject_id, day
+                    ` : `
+                    SELECT
+                        subject_id,
+                        date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
+                        COUNT(*)::int AS pulls_with_unique_file_md5
+                    FROM ${dataPullTableSql}
+                    WHERE subject_id = ANY($1::text[])
+                      ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                      AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                    GROUP BY subject_id, day
+                    `}
+                )
                 SELECT
-                    subject_id,
-                    date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
-                    ${trendCountExpr}::int AS pulls_with_unique_file_md5
-                FROM ${dataPullTableSql}
-                WHERE subject_id = ANY($1::text[])
-                  ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
-                  AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
-                GROUP BY subject_id, day
-                ORDER BY day DESC, subject_id
+                    t.subject_id,
+                    t.day,
+                    t.pulls_with_unique_file_md5,
+                    (c.consent_date IS NOT NULL AND t.day = c.consent_date) AS is_consent_date
+                FROM trend_by_subject t
+                LEFT JOIN consent_by_subject c
+                    ON c.subject_id = t.subject_id
+                ORDER BY t.day DESC, t.subject_id
                 LIMIT 500
             `;
 
-            const pullTrendParams = hasDataPullProjectColumn ? [missingSubjectIds, projectId] : [missingSubjectIds];
+            const pullTrendParams = [missingSubjectIds, projectId];
             const pullTrendResult = await connection.query(pullTrendQuery, pullTrendParams);
             pullTrendBySubject = (pullTrendResult.rows as TrendRow[]).map((row) => ({
                 subject_id: row.subject_id,
                 day: row.day,
                 pulls_with_unique_file_md5: parseCount(row.pulls_with_unique_file_md5),
+                is_consent_date: Boolean(row.is_consent_date),
+            }));
+
+            const pullTrendByModalityQuery = `
+                WITH consent_by_subject AS (
+                    SELECT
+                        subject_id,
+                        CASE
+                            WHEN NULLIF(subject_metadata->>'consent_date', '') ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                                THEN NULLIF(subject_metadata->>'consent_date', '')::date
+                            WHEN NULLIF(subject_metadata->>'consent_date', '') ~ '^\\d{4}-\\d{2}-\\d{2}[ T].*$'
+                                THEN NULLIF(subject_metadata->>'consent_date', '')::timestamptz::date
+                            WHEN NULLIF(subject_metadata->>'consent_date', '') ~ '^\\d{1,2}/\\d{1,2}/\\d{4}$'
+                                THEN to_date(NULLIF(subject_metadata->>'consent_date', ''), 'MM/DD/YYYY')
+                            ELSE NULL
+                        END AS consent_date
+                    FROM public.subjects
+                    WHERE project_id = $2
+                      AND subject_id = ANY($1::text[])
+                ),
+                trend_by_subject_modality AS (
+                    ${hasFileMd5Column ? `
+                    WITH first_seen_md5_by_modality AS (
+                        SELECT
+                            subject_id,
+                            CASE
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp_qc%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlampqc%'
+                                    THEN 'mindlamp_qc_sharepoint'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_recap%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_redcap%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%penncnb%'
+                                    THEN 'penncnb'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%redcap%'
+                                    THEN 'redcap'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%eeg%'
+                                    THEN 'eeg_sharepoint'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp%'
+                                    THEN 'mindlamp'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%cantab%'
+                                    THEN 'cantab'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcript%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcripts%'
+                                    THEN 'transcript_sharepoint'
+                                ELSE NULL
+                            END AS modality_key,
+                            MIN(date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date) AS day,
+                            NULLIF(file_md5::text, '') AS file_md5
+                        FROM ${dataPullTableSql}
+                        WHERE subject_id = ANY($1::text[])
+                          ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                          AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                          AND COALESCE(file_md5::text, '') <> ''
+                        GROUP BY subject_id, modality_key, NULLIF(file_md5::text, '')
+                    )
+                    SELECT
+                        subject_id,
+                        modality_key,
+                        day,
+                        COUNT(*)::int AS pulls_with_unique_file_md5
+                    FROM first_seen_md5_by_modality
+                    GROUP BY subject_id, modality_key, day
+                    ` : `
+                    SELECT
+                        subject_id,
+                        CASE
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp_qc%'
+                                OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlampqc%'
+                                THEN 'mindlamp_qc_sharepoint'
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_recap%'
+                                OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_redcap%'
+                                OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%penncnb%'
+                                THEN 'penncnb'
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%redcap%'
+                                THEN 'redcap'
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%eeg%'
+                                THEN 'eeg_sharepoint'
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp%'
+                                THEN 'mindlamp'
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%cantab%'
+                                THEN 'cantab'
+                            WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcript%'
+                                OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcripts%'
+                                THEN 'transcript_sharepoint'
+                            ELSE NULL
+                        END AS modality_key,
+                        date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
+                        COUNT(*)::int AS pulls_with_unique_file_md5
+                    FROM ${dataPullTableSql}
+                    WHERE subject_id = ANY($1::text[])
+                      ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                      AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                    GROUP BY subject_id, modality_key, day
+                    `}
+                )
+                SELECT
+                    t.subject_id,
+                    t.modality_key,
+                    t.day,
+                    t.pulls_with_unique_file_md5,
+                    (c.consent_date IS NOT NULL AND t.day = c.consent_date) AS is_consent_date
+                FROM trend_by_subject_modality t
+                LEFT JOIN consent_by_subject c
+                    ON c.subject_id = t.subject_id
+                WHERE t.modality_key IS NOT NULL
+                ORDER BY t.day DESC, t.subject_id, t.modality_key
+                LIMIT 2500
+            `;
+
+            const pullTrendByModalityResult = await connection.query(pullTrendByModalityQuery, pullTrendParams);
+            pullTrendBySubjectAndModality = (pullTrendByModalityResult.rows as TrendByModalityRow[]).map((row) => ({
+                subject_id: row.subject_id,
+                modality_key: row.modality_key,
+                day: row.day,
+                pulls_with_unique_file_md5: parseCount(row.pulls_with_unique_file_md5),
+                is_consent_date: Boolean(row.is_consent_date),
             }));
         }
     }
@@ -420,9 +617,11 @@ export async function GET(
             site_id: row.site_id,
             created_at: row.created_at,
         })),
+        consent_dates_by_subject: consentDatesBySubject,
         unique_file_paths_by_data_source: uniqueFilePathsByDataSource,
         data_pull_coverage_by_subject: coverageBySubject,
         data_pull_trend_by_subject: pullTrendBySubject,
+        data_pull_trend_by_subject_and_modality: pullTrendBySubjectAndModality,
         last_warning_logs: lastWarnings,
         metadata: {
             notes: {

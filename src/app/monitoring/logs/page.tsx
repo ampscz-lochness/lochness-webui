@@ -8,6 +8,7 @@ import { BarChart3, RefreshCcw, Terminal } from "lucide-react";
 import { toast } from "sonner";
 
 import { Heading } from "@/components/heading";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -19,6 +20,7 @@ type MonitoringResponse = {
         newly_added_last_night_count: number;
     };
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
+    consent_dates_by_subject: Array<{ subject_id: string; consent_date: string | null }>;
     unique_file_paths_by_data_source: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }>;
     data_pull_coverage_by_subject: Array<{
         subject_id: string;
@@ -29,10 +31,18 @@ type MonitoringResponse = {
             data_source_name: string | null;
             pull_timestamp: string | null;
             file_md5: string | null;
+            file_path: string | null;
             has_file_md5: boolean;
         }>;
     }>;
-    data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number }>;
+    data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }>;
+    data_pull_trend_by_subject_and_modality: Array<{
+        subject_id: string;
+        modality_key: string | null;
+        day: string;
+        pulls_with_unique_file_md5: number;
+        is_consent_date: boolean;
+    }>;
     last_warning_logs: Array<{
         timestamp: string;
         level: string;
@@ -58,6 +68,19 @@ const asLocalDateTime = (value: string | null | undefined): string => {
 
 const asReadableDate = (value: string | null | undefined): string => {
     if (!value) return "N/A";
+    const dateOnlyMatch = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnlyMatch) {
+        const year = Number(dateOnlyMatch[1]);
+        const month = Number(dateOnlyMatch[2]);
+        const day = Number(dateOnlyMatch[3]);
+        const localDate = new Date(year, month - 1, day);
+        return localDate.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "2-digit",
+        });
+    }
+
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "N/A";
     return date.toLocaleDateString(undefined, {
@@ -65,6 +88,24 @@ const asReadableDate = (value: string | null | undefined): string => {
         month: "short",
         day: "2-digit",
     });
+};
+
+const asFileName = (value: string | null | undefined): string => {
+    if (!value) return "N/A";
+    const normalized = value.replace(/\\/g, "/");
+    const parts = normalized.split("/").filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : value;
+};
+
+const asDateKey = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const trimmed = value.trim();
+    const match = trimmed.match(/^\d{4}-\d{2}-\d{2}/);
+    if (match) return match[0];
+
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString().slice(0, 10);
 };
 
 const normalizeDataSourceName = (value: string | null | undefined): string => {
@@ -100,6 +141,32 @@ const mapDataSourceToCoverageModality = (value: string | null | undefined): Cove
     return null;
 };
 
+const COVERAGE_MODALITY_LABEL_BY_KEY: Record<CoverageModalityKey, string> = COVERAGE_MODALITY_COLUMNS.reduce(
+    (acc, column) => {
+        acc[column.key] = column.label;
+        return acc;
+    },
+    {
+        redcap: "REDCap",
+        eeg_sharepoint: "EEG (SharePoint)",
+        mindlamp: "MindLAMP",
+        mindlamp_qc_sharepoint: "MindLAMP QC (SharePoint)",
+        penncnb: "PennCNB (UPENN_recap)",
+        cantab: "CANTAB",
+        transcript_sharepoint: "Transcript (SharePoint)",
+    }
+);
+
+const toGroupedDataSourceLabel = (value: string | null | undefined): string => {
+    const modality = mapDataSourceToCoverageModality(value);
+    if (modality) {
+        return COVERAGE_MODALITY_LABEL_BY_KEY[modality];
+    }
+
+    const normalized = normalizeDataSourceName(value);
+    return normalized && normalized !== "unknown" ? normalized : "N/A";
+};
+
 export default function MonitoringPage() {
     const monitoringIcon = <Terminal className="h-8 w-8" />;
     const { resolvedTheme } = useTheme();
@@ -109,6 +176,7 @@ export default function MonitoringPage() {
     const [projectId, setProjectId] = React.useState("Procan");
     const [data, setData] = React.useState<MonitoringResponse | null>(null);
     const [loading, setLoading] = React.useState(true);
+    const [activeTrendTab, setActiveTrendTab] = React.useState<string>("all");
 
     const fetchMonitoring = React.useCallback(async (requestedProjectId: string) => {
         setLoading(true);
@@ -134,13 +202,54 @@ export default function MonitoringPage() {
         fetchMonitoring(projectId);
     }, [projectId, fetchMonitoring]);
 
-    const trendBySubject = React.useMemo(() => {
-        const grouped = new Map<string, Array<{ day: string; pulls_with_unique_file_md5: number }>>();
-        for (const row of data?.data_pull_trend_by_subject ?? []) {
-            if (!grouped.has(row.subject_id)) {
-                grouped.set(row.subject_id, []);
+    const trendTabOptions = React.useMemo(() => {
+        const available = new Set<CoverageModalityKey>();
+        for (const row of data?.data_pull_trend_by_subject_and_modality ?? []) {
+            if (row.modality_key && COVERAGE_MODALITY_COLUMNS.some((column) => column.key === row.modality_key)) {
+                available.add(row.modality_key as CoverageModalityKey);
             }
-            grouped.get(row.subject_id)?.push({ day: row.day, pulls_with_unique_file_md5: row.pulls_with_unique_file_md5 });
+        }
+
+        return [
+            { key: "all", label: "All" },
+            ...COVERAGE_MODALITY_COLUMNS
+                .filter((column) => available.has(column.key))
+                .map((column) => ({ key: column.key, label: column.label })),
+        ];
+    }, [data]);
+
+    React.useEffect(() => {
+        if (!trendTabOptions.some((tab) => tab.key === activeTrendTab)) {
+            setActiveTrendTab("all");
+        }
+    }, [activeTrendTab, trendTabOptions]);
+
+    const trendBySubject = React.useMemo(() => {
+        const grouped = new Map<string, Array<{ day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }>>();
+
+        if (activeTrendTab === "all") {
+            for (const row of data?.data_pull_trend_by_subject ?? []) {
+                if (!grouped.has(row.subject_id)) {
+                    grouped.set(row.subject_id, []);
+                }
+                grouped.get(row.subject_id)?.push({
+                    day: row.day,
+                    pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
+                    is_consent_date: row.is_consent_date,
+                });
+            }
+        } else {
+            for (const row of data?.data_pull_trend_by_subject_and_modality ?? []) {
+                if (row.modality_key !== activeTrendTab) continue;
+                if (!grouped.has(row.subject_id)) {
+                    grouped.set(row.subject_id, []);
+                }
+                grouped.get(row.subject_id)?.push({
+                    day: row.day,
+                    pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
+                    is_consent_date: row.is_consent_date,
+                });
+            }
         }
 
         for (const entries of grouped.values()) {
@@ -148,11 +257,19 @@ export default function MonitoringPage() {
         }
 
         return grouped;
-    }, [data]);
+    }, [activeTrendTab, data]);
 
     const highestTrendCount = React.useMemo(() => {
-        const allValues = (data?.data_pull_trend_by_subject ?? []).map((row) => row.pulls_with_unique_file_md5);
+        const allValues = [...trendBySubject.values()].flatMap((rows) => rows.map((row) => row.pulls_with_unique_file_md5));
         return allValues.length > 0 ? Math.max(...allValues) : 1;
+    }, [trendBySubject]);
+
+    const consentDateBySubject = React.useMemo(() => {
+        const map = new Map<string, string | null>();
+        for (const row of data?.consent_dates_by_subject ?? []) {
+            map.set(row.subject_id, row.consent_date);
+        }
+        return map;
     }, [data]);
 
     const coverageColumns = React.useMemo<GridColDef[]>(() => {
@@ -355,6 +472,78 @@ export default function MonitoringPage() {
         [data]
     );
 
+    const subjectSiteMap = React.useMemo(() => {
+        const map = new Map<string, string>();
+        for (const row of data?.summary.subjects_missing_required_variables_by_site ?? []) {
+            for (const subjectId of row.subject_ids) {
+                map.set(subjectId, row.site_id);
+            }
+        }
+        return map;
+    }, [data]);
+
+    const latestDataPullColumns = React.useMemo<GridColDef[]>(
+        () => [
+            { field: "pull_timestamp", headerName: "Pull Timestamp", minWidth: 220, flex: 1.3 },
+            { field: "file_name", headerName: "File Name", minWidth: 280, flex: 1.8 },
+            { field: "site_id", headerName: "Site", minWidth: 140, flex: 1 },
+            { field: "subject_id", headerName: "Subject", minWidth: 180, flex: 1.2 },
+            { field: "data_source_name", headerName: "Data Source", minWidth: 220, flex: 1.4 },
+        ],
+        []
+    );
+
+    const latestDataPullRows = React.useMemo(() => {
+        const latestByMd5 = new Map<
+            string,
+            {
+                file_md5: string;
+                file_name: string;
+                pull_timestamp: string;
+                pull_timestamp_raw: string | null;
+                pull_timestamp_ms: number;
+                site_id: string;
+                subject_id: string;
+                data_source_name: string;
+            }
+        >();
+
+        for (const row of data?.data_pull_coverage_by_subject ?? []) {
+            const siteId = subjectSiteMap.get(row.subject_id) ?? "N/A";
+            for (const item of row.recent_pull_items ?? []) {
+                if (!item.file_md5) continue;
+
+                const timeMs = item.pull_timestamp ? new Date(item.pull_timestamp).getTime() : Number.NEGATIVE_INFINITY;
+                const existing = latestByMd5.get(item.file_md5);
+                if (!existing || timeMs > existing.pull_timestamp_ms) {
+                    latestByMd5.set(item.file_md5, {
+                        file_md5: item.file_md5,
+                        file_name: asFileName(item.file_path),
+                        pull_timestamp: asLocalDateTime(item.pull_timestamp),
+                        pull_timestamp_raw: item.pull_timestamp,
+                        pull_timestamp_ms: Number.isNaN(timeMs) ? Number.NEGATIVE_INFINITY : timeMs,
+                        site_id: siteId,
+                        subject_id: row.subject_id,
+                        data_source_name: toGroupedDataSourceLabel(item.data_source_name),
+                    });
+                }
+            }
+        }
+
+        return [...latestByMd5.values()]
+            .sort((a, b) => b.pull_timestamp_ms - a.pull_timestamp_ms)
+            .slice(0, 200)
+            .map((row) => ({
+                id: row.file_md5,
+                file_name: row.file_name,
+                pull_timestamp: row.pull_timestamp,
+                pull_timestamp_raw: row.pull_timestamp_raw,
+                site_id: row.site_id,
+                subject_id: row.subject_id,
+                data_source_name: row.data_source_name,
+            }));
+    }, [data, subjectSiteMap]);
+
     const warningColumns = React.useMemo<GridColDef[]>(
         () => [
             { field: "timestamp", headerName: "Timestamp", minWidth: 220, flex: 1.2 },
@@ -455,7 +644,7 @@ export default function MonitoringPage() {
                     </section>
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
-                        <h2 className="text-lg font-semibold mb-3">Newly Subjects</h2>
+                        <h2 className="text-lg font-semibold mb-3">Newly Added Subjects</h2>
                         <MuiThemeProvider theme={muiTheme}>
                             <div className="h-[320px] w-full">
                                 <DataGrid
@@ -519,34 +708,83 @@ export default function MonitoringPage() {
                         </MuiThemeProvider>
                     </section>
 
+                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                        <h2 className="text-lg font-semibold mb-3">Latest 200 data pulls</h2>
+                        <MuiThemeProvider theme={muiTheme}>
+                            <div className="h-[360px] w-full">
+                                <DataGrid
+                                    rows={latestDataPullRows}
+                                    columns={latestDataPullColumns}
+                                    sx={gridSx}
+                                    disableRowSelectionOnClick
+                                    hideFooterSelectedRowCount
+                                    pageSizeOptions={[10, 20, 50]}
+                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                    localeText={{ noRowsLabel: "No data pulls" }}
+                                />
+                            </div>
+                        </MuiThemeProvider>
+                    </section>
+
                     <section className="border rounded-lg p-4 bg-card text-card-foreground">
                         <div className="flex items-center gap-2 mb-3">
                             <BarChart3 className="h-5 w-5" />
                             <h2 className="text-lg font-semibold">Pull Trend (daily, pulls with unique file_md5, newest first)</h2>
                         </div>
+                        <Tabs value={activeTrendTab} onValueChange={setActiveTrendTab} className="w-full">
+                            <TabsList className="mb-3 flex h-auto w-full flex-wrap justify-start gap-2">
+                                {trendTabOptions.map((tab) => (
+                                    <TabsTrigger key={tab.key} value={tab.key}>
+                                        {tab.label}
+                                    </TabsTrigger>
+                                ))}
+                            </TabsList>
+                        </Tabs>
                         <div className="space-y-4">
                             {[...trendBySubject.entries()].length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No trend data</p>
+                                <p className="text-sm text-muted-foreground">No trend data for this modality</p>
                             ) : (
-                                [...trendBySubject.entries()].map(([subjectId, points]) => (
-                                    <div key={subjectId} className="border rounded-md p-3">
-                                        <h3 className="text-sm font-semibold mb-2">{subjectId}</h3>
-                                        <div className="space-y-2">
-                                            {points.map((point) => {
-                                                const widthPercent = Math.max(4, (point.pulls_with_unique_file_md5 / highestTrendCount) * 100);
-                                                return (
-                                                    <div key={`${subjectId}-${point.day}`} className="grid grid-cols-[160px_1fr_60px] gap-2 items-center text-xs">
-                                                        <span>{asReadableDate(point.day)}</span>
-                                                        <div className="h-3 rounded bg-muted overflow-hidden">
-                                                            <div className="h-full bg-emerald-500" style={{ width: `${widthPercent}%` }} />
+                                [...trendBySubject.entries()].map(([subjectId, points]) => {
+                                    const consentDateRaw = consentDateBySubject.get(subjectId) ?? null;
+                                    const consentDateKey = asDateKey(consentDateRaw);
+
+                                    return (
+                                        <div key={subjectId} className="border rounded-md p-3">
+                                            <h3 className="text-sm font-semibold">{subjectId}</h3>
+                                            <p className="mb-2 text-xs text-muted-foreground">
+                                                Consent date: {asReadableDate(consentDateKey ?? consentDateRaw)}
+                                            </p>
+                                            <div className="space-y-2">
+                                                {points.map((point) => {
+                                                    const widthPercent = Math.max(4, (point.pulls_with_unique_file_md5 / highestTrendCount) * 100);
+                                                    const dayKey = asDateKey(point.day);
+                                                    const isConsentDate = Boolean(point.is_consent_date);
+                                                    return (
+                                                        <div key={`${subjectId}-${point.day}`} className="grid grid-cols-[160px_1fr_60px_90px] gap-2 items-center text-xs">
+                                                            <span>{asReadableDate(dayKey ?? point.day)}</span>
+                                                            <div
+                                                                className={`h-3 overflow-hidden rounded bg-muted ${isConsentDate ? "ring-1 ring-sky-500/70" : ""}`}
+                                                            >
+                                                                <div
+                                                                    className={`h-full ${isConsentDate ? "bg-sky-500" : "bg-emerald-500"}`}
+                                                                    style={{ width: `${widthPercent}%` }}
+                                                                />
+                                                            </div>
+                                                            <span>{point.pulls_with_unique_file_md5}</span>
+                                                            {isConsentDate ? (
+                                                                <span className="inline-flex w-fit items-center rounded-full border border-sky-300/60 bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-800 dark:border-sky-500/50 dark:bg-sky-900/30 dark:text-sky-300">
+                                                                    Consent
+                                                                </span>
+                                                            ) : (
+                                                                <span />
+                                                            )}
                                                         </div>
-                                                        <span>{point.pulls_with_unique_file_md5}</span>
-                                                    </div>
-                                                );
-                                            })}
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
-                                    </div>
-                                ))
+                                    );
+                                })
                             )}
                         </div>
                     </section>
