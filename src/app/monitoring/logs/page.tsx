@@ -389,6 +389,18 @@ export default function MonitoringPage() {
         return entries.filter(([subjectId]) => subjectId.toLowerCase().includes(normalizedFilter));
     }, [trendBySubject, trendSubjectFilter]);
 
+    const activeTrendModalityColor = React.useMemo(() => {
+        if (activeTrendTab === "all") {
+            return null;
+        }
+
+        if (COVERAGE_MODALITY_COLUMNS.some((column) => column.key === activeTrendTab)) {
+            return TREND_MODALITY_COLOR_BY_KEY[activeTrendTab as CoverageModalityKey];
+        }
+
+        return null;
+    }, [activeTrendTab]);
+
     const consentDateBySubject = React.useMemo(() => {
         const map = new Map<string, string | null>();
         for (const row of data?.consent_dates_by_subject ?? []) {
@@ -1072,7 +1084,16 @@ export default function MonitoringPage() {
                             <TabsList className="mb-3 flex h-auto w-full flex-wrap justify-start gap-2">
                                 {trendTabOptions.map((tab) => (
                                     <TabsTrigger key={tab.key} value={tab.key}>
-                                        {tab.label}
+                                        <span className="inline-flex items-center gap-2">
+                                            {tab.key !== "all" && COVERAGE_MODALITY_COLUMNS.some((column) => column.key === tab.key) ? (
+                                                <span
+                                                    className="h-2 w-2 rounded-full border border-black/10"
+                                                    style={{ backgroundColor: TREND_MODALITY_COLOR_BY_KEY[tab.key as CoverageModalityKey] }}
+                                                    aria-hidden="true"
+                                                />
+                                            ) : null}
+                                            <span>{tab.label}</span>
+                                        </span>
                                     </TabsTrigger>
                                 ))}
                             </TabsList>
@@ -1130,13 +1151,20 @@ export default function MonitoringPage() {
                                                     const hasFiles = point.file_paths.length > 0;
                                                     const stackedSegments = point.segments?.filter((segment) => segment.count > 0) ?? [];
                                                     const showStackedSegments = activeTrendTab === "all" && stackedSegments.length > 0;
+                                                    const nonStackedBarColor = activeTrendModalityColor ?? (isConsentDate ? "#0ea5e9" : "#10b981");
+                                                    const consentOutlineStyle = isConsentDate
+                                                        ? {
+                                                            boxShadow: `inset 0 0 0 1px ${activeTrendModalityColor ?? "#0ea5e9"}`,
+                                                        }
+                                                        : undefined;
                                                     return (
                                                         <details key={`${subjectId}-${point.day}`} className="space-y-2">
                                                             <summary className="list-none">
                                                                 <div className="grid grid-cols-[160px_1fr_160px_60px_90px] gap-2 items-center text-xs">
                                                                     <span>{asReadableDate(dayKey ?? point.day)}</span>
                                                                     <div
-                                                                        className={`h-3 overflow-hidden rounded bg-muted ${isConsentDate ? "ring-1 ring-sky-500/70" : ""}`}
+                                                                        className="h-3 overflow-hidden rounded bg-muted"
+                                                                        style={consentOutlineStyle}
                                                                     >
                                                                         <div className="flex h-full overflow-hidden rounded" style={{ width: `${widthPercent}%` }}>
                                                                             {showStackedSegments ? (
@@ -1153,7 +1181,8 @@ export default function MonitoringPage() {
                                                                                 ))
                                                                             ) : (
                                                                                 <div
-                                                                                    className={`h-full w-full ${isConsentDate ? "bg-sky-500" : "bg-emerald-500"}`}
+                                                                                    className="h-full w-full"
+                                                                                    style={{ backgroundColor: nonStackedBarColor }}
                                                                                 />
                                                                             )}
                                                                         </div>
