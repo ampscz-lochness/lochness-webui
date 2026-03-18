@@ -33,6 +33,7 @@ type TrendRow = {
     day: string;
     pulls_with_unique_file_md5: string;
     is_consent_date: boolean;
+    file_paths: string[] | null;
 };
 
 type TrendByModalityRow = {
@@ -41,6 +42,7 @@ type TrendByModalityRow = {
     day: string;
     pulls_with_unique_file_md5: string;
     is_consent_date: boolean;
+    file_paths: string[] | null;
 };
 
 type WarningRow = {
@@ -81,8 +83,8 @@ export type MonitoringPayload = {
             has_file_md5: boolean;
         }>;
     }>;
-    data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }>;
-    data_pull_trend_by_subject_and_modality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }>;
+    data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>;
+    data_pull_trend_by_subject_and_modality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>;
     last_warning_logs: Array<{
         timestamp: string;
         level: string;
@@ -302,8 +304,8 @@ export class Monitoring {
 
         let pullCountsBySubject: Array<{ subject_id: string; total_pulls: number; pulls_with_unique_file_md5: number }> = [];
         let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; file_md5: string | null; file_path: string | null; has_file_md5: boolean }> = [];
-        let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }> = [];
-        let pullTrendBySubjectAndModality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }> = [];
+        let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }> = [];
+        let pullTrendBySubjectAndModality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }> = [];
         let uniqueFilePathsByDataSource: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }> = [];
 
         if (missingSubjectIds.length > 0 && hasDataPullSubjectColumn && dataPullTableSql) {
@@ -395,31 +397,52 @@ export class Monitoring {
                         ${hasFileMd5Column ? `
                         WITH first_seen_md5 AS (
                             SELECT
+                                DISTINCT ON (subject_id, NULLIF(file_md5::text, ''))
                                 subject_id,
-                                MIN(date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date) AS day,
-                                NULLIF(file_md5::text, '') AS file_md5
+                                date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
+                                ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS first_seen_timestamp,
+                                NULLIF(file_md5::text, '') AS file_md5,
+                                ${pullFilePathColumn ? `NULLIF(${quoteIdentifier(pullFilePathColumn)}::text, '')` : "NULL::text"} AS file_path
                             FROM ${dataPullTableSql}
                             WHERE subject_id = ANY($1::text[])
                             ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
                             AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
                             AND COALESCE(file_md5::text, '') <> ''
-                            GROUP BY subject_id, NULLIF(file_md5::text, '')
+                            ORDER BY subject_id, NULLIF(file_md5::text, ''), ${quoteIdentifier(pullTimestampColumn)}::timestamptz ASC NULLS LAST
                         )
                         SELECT
                             subject_id,
                             day,
-                            COUNT(*)::int AS pulls_with_unique_file_md5
+                            COUNT(*)::int AS pulls_with_unique_file_md5,
+                            COALESCE(
+                                array_agg(file_path ORDER BY first_seen_timestamp DESC NULLS LAST, file_path)
+                                    FILTER (WHERE file_path IS NOT NULL),
+                                ARRAY[]::text[]
+                            ) AS file_paths
                         FROM first_seen_md5
                         GROUP BY subject_id, day
                         ` : `
+                        WITH raw_pulls AS (
+                            SELECT
+                                subject_id,
+                                date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
+                                ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_timestamp,
+                                ${pullFilePathColumn ? `NULLIF(${quoteIdentifier(pullFilePathColumn)}::text, '')` : "NULL::text"} AS file_path
+                            FROM ${dataPullTableSql}
+                            WHERE subject_id = ANY($1::text[])
+                            ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                            AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                        )
                         SELECT
                             subject_id,
-                            date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
-                            COUNT(*)::int AS pulls_with_unique_file_md5
-                        FROM ${dataPullTableSql}
-                        WHERE subject_id = ANY($1::text[])
-                        ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
-                        AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                            day,
+                            COUNT(*)::int AS pulls_with_unique_file_md5,
+                            COALESCE(
+                                array_agg(file_path ORDER BY pull_timestamp DESC NULLS LAST, file_path)
+                                    FILTER (WHERE file_path IS NOT NULL),
+                                ARRAY[]::text[]
+                            ) AS file_paths
+                        FROM raw_pulls
                         GROUP BY subject_id, day
                         `}
                     )
@@ -427,7 +450,8 @@ export class Monitoring {
                         t.subject_id,
                         t.day,
                         t.pulls_with_unique_file_md5,
-                        (c.consent_date IS NOT NULL AND t.day = c.consent_date) AS is_consent_date
+                        (c.consent_date IS NOT NULL AND t.day = c.consent_date) AS is_consent_date,
+                        t.file_paths
                     FROM trend_by_subject t
                     LEFT JOIN consent_by_subject c
                         ON c.subject_id = t.subject_id
@@ -442,6 +466,7 @@ export class Monitoring {
                     day: row.day,
                     pulls_with_unique_file_md5: parseCount(row.pulls_with_unique_file_md5),
                     is_consent_date: Boolean(row.is_consent_date),
+                    file_paths: row.file_paths ?? [],
                 }));
 
                 const pullTrendByModalityQuery = `
@@ -465,6 +490,7 @@ export class Monitoring {
                         ${hasFileMd5Column ? `
                         WITH first_seen_md5_by_modality AS (
                             SELECT
+                                DISTINCT ON (subject_id, modality_key, NULLIF(file_md5::text, ''))
                                 subject_id,
                                 CASE
                                     WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp_qc%'
@@ -487,52 +513,73 @@ export class Monitoring {
                                         THEN 'transcript_sharepoint'
                                     ELSE NULL
                                 END AS modality_key,
-                                MIN(date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date) AS day,
-                                NULLIF(file_md5::text, '') AS file_md5
+                                date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
+                                ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS first_seen_timestamp,
+                                NULLIF(file_md5::text, '') AS file_md5,
+                                ${pullFilePathColumn ? `NULLIF(${quoteIdentifier(pullFilePathColumn)}::text, '')` : "NULL::text"} AS file_path
                             FROM ${dataPullTableSql}
                             WHERE subject_id = ANY($1::text[])
                             ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
                             AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
                             AND COALESCE(file_md5::text, '') <> ''
-                            GROUP BY subject_id, modality_key, NULLIF(file_md5::text, '')
+                            ORDER BY subject_id, modality_key, NULLIF(file_md5::text, ''), ${quoteIdentifier(pullTimestampColumn)}::timestamptz ASC NULLS LAST
                         )
                         SELECT
                             subject_id,
                             modality_key,
                             day,
-                            COUNT(*)::int AS pulls_with_unique_file_md5
+                            COUNT(*)::int AS pulls_with_unique_file_md5,
+                            COALESCE(
+                                array_agg(file_path ORDER BY first_seen_timestamp DESC NULLS LAST, file_path)
+                                    FILTER (WHERE file_path IS NOT NULL),
+                                ARRAY[]::text[]
+                            ) AS file_paths
                         FROM first_seen_md5_by_modality
                         GROUP BY subject_id, modality_key, day
                         ` : `
+                        WITH raw_pulls_by_modality AS (
+                            SELECT
+                                subject_id,
+                                CASE
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp_qc%'
+                                        OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlampqc%'
+                                        THEN 'mindlamp_qc_sharepoint'
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_recap%'
+                                        OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_redcap%'
+                                        OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%penncnb%'
+                                        THEN 'penncnb'
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%redcap%'
+                                        THEN 'redcap'
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%eeg%'
+                                        THEN 'eeg_sharepoint'
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp%'
+                                        THEN 'mindlamp'
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%cantab%'
+                                        THEN 'cantab'
+                                    WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcript%'
+                                        OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcripts%'
+                                        THEN 'transcript_sharepoint'
+                                    ELSE NULL
+                                END AS modality_key,
+                                date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
+                                ${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_timestamp,
+                                ${pullFilePathColumn ? `NULLIF(${quoteIdentifier(pullFilePathColumn)}::text, '')` : "NULL::text"} AS file_path
+                            FROM ${dataPullTableSql}
+                            WHERE subject_id = ANY($1::text[])
+                            ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                            AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                        )
                         SELECT
                             subject_id,
-                            CASE
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp_qc%'
-                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlampqc%'
-                                    THEN 'mindlamp_qc_sharepoint'
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_recap%'
-                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_redcap%'
-                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%penncnb%'
-                                    THEN 'penncnb'
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%redcap%'
-                                    THEN 'redcap'
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%eeg%'
-                                    THEN 'eeg_sharepoint'
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp%'
-                                    THEN 'mindlamp'
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%cantab%'
-                                    THEN 'cantab'
-                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcript%'
-                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcripts%'
-                                    THEN 'transcript_sharepoint'
-                                ELSE NULL
-                            END AS modality_key,
-                            date_trunc('day', ${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS day,
-                            COUNT(*)::int AS pulls_with_unique_file_md5
-                        FROM ${dataPullTableSql}
-                        WHERE subject_id = ANY($1::text[])
-                        ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
-                        AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                            modality_key,
+                            day,
+                            COUNT(*)::int AS pulls_with_unique_file_md5,
+                            COALESCE(
+                                array_agg(file_path ORDER BY pull_timestamp DESC NULLS LAST, file_path)
+                                    FILTER (WHERE file_path IS NOT NULL),
+                                ARRAY[]::text[]
+                            ) AS file_paths
+                        FROM raw_pulls_by_modality
                         GROUP BY subject_id, modality_key, day
                         `}
                     )
@@ -541,7 +588,8 @@ export class Monitoring {
                         t.modality_key,
                         t.day,
                         t.pulls_with_unique_file_md5,
-                        (c.consent_date IS NOT NULL AND t.day = c.consent_date) AS is_consent_date
+                        (c.consent_date IS NOT NULL AND t.day = c.consent_date) AS is_consent_date,
+                        t.file_paths
                     FROM trend_by_subject_modality t
                     LEFT JOIN consent_by_subject c
                         ON c.subject_id = t.subject_id
@@ -557,6 +605,7 @@ export class Monitoring {
                     day: row.day,
                     pulls_with_unique_file_md5: parseCount(row.pulls_with_unique_file_md5),
                     is_consent_date: Boolean(row.is_consent_date),
+                    file_paths: row.file_paths ?? [],
                 }));
             }
         }

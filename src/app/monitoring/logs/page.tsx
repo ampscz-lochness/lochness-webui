@@ -35,13 +35,14 @@ type MonitoringResponse = {
             has_file_md5: boolean;
         }>;
     }>;
-    data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }>;
+    data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>;
     data_pull_trend_by_subject_and_modality: Array<{
         subject_id: string;
         modality_key: string | null;
         day: string;
         pulls_with_unique_file_md5: number;
         is_consent_date: boolean;
+        file_paths: string[];
     }>;
     last_warning_logs: Array<{
         timestamp: string;
@@ -225,7 +226,7 @@ export default function MonitoringPage() {
     }, [activeTrendTab, trendTabOptions]);
 
     const trendBySubject = React.useMemo(() => {
-        const grouped = new Map<string, Array<{ day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean }>>();
+        const grouped = new Map<string, Array<{ day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>>();
 
         if (activeTrendTab === "all") {
             for (const row of data?.data_pull_trend_by_subject ?? []) {
@@ -236,6 +237,7 @@ export default function MonitoringPage() {
                     day: row.day,
                     pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
                     is_consent_date: row.is_consent_date,
+                    file_paths: row.file_paths,
                 });
             }
         } else {
@@ -248,6 +250,7 @@ export default function MonitoringPage() {
                     day: row.day,
                     pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
                     is_consent_date: row.is_consent_date,
+                    file_paths: row.file_paths,
                 });
             }
         }
@@ -759,26 +762,49 @@ export default function MonitoringPage() {
                                                     const widthPercent = Math.max(4, (point.pulls_with_unique_file_md5 / highestTrendCount) * 100);
                                                     const dayKey = asDateKey(point.day);
                                                     const isConsentDate = Boolean(point.is_consent_date);
+                                                    const hasFiles = point.file_paths.length > 0;
                                                     return (
-                                                        <div key={`${subjectId}-${point.day}`} className="grid grid-cols-[160px_1fr_60px_90px] gap-2 items-center text-xs">
-                                                            <span>{asReadableDate(dayKey ?? point.day)}</span>
-                                                            <div
-                                                                className={`h-3 overflow-hidden rounded bg-muted ${isConsentDate ? "ring-1 ring-sky-500/70" : ""}`}
-                                                            >
-                                                                <div
-                                                                    className={`h-full ${isConsentDate ? "bg-sky-500" : "bg-emerald-500"}`}
-                                                                    style={{ width: `${widthPercent}%` }}
-                                                                />
-                                                            </div>
-                                                            <span>{point.pulls_with_unique_file_md5}</span>
-                                                            {isConsentDate ? (
-                                                                <span className="inline-flex w-fit items-center rounded-full border border-sky-300/60 bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-800 dark:border-sky-500/50 dark:bg-sky-900/30 dark:text-sky-300">
-                                                                    Consent
-                                                                </span>
-                                                            ) : (
-                                                                <span />
-                                                            )}
-                                                        </div>
+                                                        <details key={`${subjectId}-${point.day}`} className="space-y-2">
+                                                            <summary className="list-none">
+                                                                <div className="grid grid-cols-[160px_1fr_160px_60px_90px] gap-2 items-center text-xs">
+                                                                    <span>{asReadableDate(dayKey ?? point.day)}</span>
+                                                                    <div
+                                                                        className={`h-3 overflow-hidden rounded bg-muted ${isConsentDate ? "ring-1 ring-sky-500/70" : ""}`}
+                                                                    >
+                                                                        <div
+                                                                            className={`h-full ${isConsentDate ? "bg-sky-500" : "bg-emerald-500"}`}
+                                                                            style={{ width: `${widthPercent}%` }}
+                                                                        />
+                                                                    </div>
+                                                                    {hasFiles ? (
+                                                                        <span className="inline-flex w-fit cursor-pointer items-center rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted">
+                                                                            Browse {point.file_paths.length} file name{point.file_paths.length === 1 ? "" : "s"}
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span />
+                                                                    )}
+                                                                    <span>{point.pulls_with_unique_file_md5}</span>
+                                                                    {isConsentDate ? (
+                                                                        <span className="inline-flex w-fit items-center rounded-full border border-sky-300/60 bg-sky-100 px-2 py-0.5 text-[11px] font-semibold text-sky-800 dark:border-sky-500/50 dark:bg-sky-900/30 dark:text-sky-300">
+                                                                            Consent
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span />
+                                                                    )}
+                                                                </div>
+                                                            </summary>
+                                                            {hasFiles ? (
+                                                                <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 sm:ml-[168px]">
+                                                                    <ul className="max-h-32 space-y-1 overflow-y-auto pr-1 text-[11px] text-foreground/90">
+                                                                        {point.file_paths.map((filePath, index) => (
+                                                                            <li key={`${subjectId}-${point.day}-${filePath}-${index}`} className="truncate" title={filePath}>
+                                                                                {asFileName(filePath)}
+                                                                            </li>
+                                                                        ))}
+                                                                    </ul>
+                                                                </div>
+                                                            ) : null}
+                                                        </details>
                                                     );
                                                 })}
                                             </div>
