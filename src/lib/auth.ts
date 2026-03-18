@@ -3,16 +3,27 @@
 // https://www.better-auth.com/docs/authentication/email-password
 
 import { betterAuth } from "better-auth";
+import { admin } from "better-auth/plugins";
+
 
 import { getConnection } from "@/lib/db";
 
 export const auth = betterAuth({
     database: getConnection(),
+    plugins: [
+        admin(),
+    ],
     emailAndPassword: {
         enabled: true,
         minPasswordLength: 2,
         autoSignIn: false,
     },
     secret: process.env.BETTER_AUTH_SECRET,
-    baseURL: process.env.NEXTAUTH_URL,
+    baseURL: process.env.BETTER_AUTH_URL ?? process.env.NEXTAUTH_URL,
+    trustedOrigins: [
+        process.env.BETTER_AUTH_URL,
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+    ].filter(Boolean) as string[],
 })

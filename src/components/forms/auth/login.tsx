@@ -1,7 +1,6 @@
 "use client"
 import { zodResolver } from "@hookform/resolvers/zod"
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import * as React from 'react'
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
@@ -34,7 +33,6 @@ export type FormSchema = z.infer<typeof formSchema>
 
 export default function LoginForm() {
     const [isLoading, setIsLoading] = React.useState(false)
-    const router = useRouter()
     const searchParams = useSearchParams()
 
     const afterLoginParam = searchParams.get('afterLogin')
@@ -64,8 +62,10 @@ export default function LoginForm() {
             }, {
                 onSuccess: (data) => {
                     resolve(data);
-                    // Redirect based on afterLogin prop or default to home
-                    router.push(redirectPath);
+                    // Hard redirect so the browser sends the fresh session cookie
+                    // in the next request; client-side push fires before the cookie
+                    // is committed and the middleware rejects it.
+                    window.location.href = redirectPath;
                 },
                 onError: (error) => {
                     console.log({ error });

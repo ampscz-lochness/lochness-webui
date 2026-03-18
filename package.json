@@ -17,6 +17,7 @@
     "@melloware/react-logviewer": "^6.2.0",
     "@mui/joy": "^5.0.0-beta.52",
     "@mui/material": "^7.0.2",
+    "@mui/x-data-grid": "^8.27.5",
     "@radix-ui/react-avatar": "^1.1.7",
     "@radix-ui/react-checkbox": "^1.1.5",
     "@radix-ui/react-collapsible": "^1.1.4",

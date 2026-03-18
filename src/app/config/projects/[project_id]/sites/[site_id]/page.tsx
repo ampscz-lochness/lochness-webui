@@ -24,6 +24,7 @@ import { Site } from '@/types/sites';
 
 import UnderDevelopment from "@/components/banners/under-development"
 import DataSourcesList from '@/components/lists/data-sources';
+import DataPullsList from '@/components/lists/data-pulls';
 
 type Params = Promise<{ project_id: string, site_id: string }>
 
@@ -68,8 +69,20 @@ export default function SitePage({
                     const data = await response.json();
                     setSite(data);
 
-                    setCreatedAt(new Date(data.site_metadata.created_at).toLocaleDateString());
-                    setCreatedAtDistance(formatDistance(new Date(data.site_metadata.created_at), new Date(), { addSuffix: true }));
+                    const createdAtValue = data?.site_metadata?.created_at;
+                    if (createdAtValue) {
+                        const createdAtDate = new Date(createdAtValue);
+                        if (!Number.isNaN(createdAtDate.getTime())) {
+                            setCreatedAt(createdAtDate.toLocaleDateString());
+                            setCreatedAtDistance(formatDistance(createdAtDate, new Date(), { addSuffix: true }));
+                        } else {
+                            setCreatedAt(null);
+                            setCreatedAtDistance(null);
+                        }
+                    } else {
+                        setCreatedAt(null);
+                        setCreatedAtDistance(null);
+                    }
                 } catch (error) {
                     console.error(error);
                     toast.error("Failed to fetch site data", {
@@ -84,7 +97,7 @@ export default function SitePage({
         }
 
         fetchSite();
-    }, [siteId]);
+    }, [projectId, siteId, router]);
 
 
     return (
@@ -188,8 +201,9 @@ export default function SitePage({
 
             <div className="flex justify-center w-full px-4">
                 <Tabs defaultValue="sources" className="w-full max-w-5xl">
-                    <TabsList className="grid w-full grid-cols-3">
+                    <TabsList className="grid w-full grid-cols-4">
                         <TabsTrigger value="sources">Data Sources</TabsTrigger>
+                        <TabsTrigger value="pulls">Data Pulls</TabsTrigger>
                         <TabsTrigger value="sinks">Data Sinks</TabsTrigger>
                         <TabsTrigger value="logs">Logs</TabsTrigger>
                     </TabsList>
@@ -197,6 +211,13 @@ export default function SitePage({
                         <div className="p-4 border rounded-md bg-card text-card-foreground">
                             {projectId && siteId && (
                                 <DataSourcesList project_id={projectId} site_id={siteId} />
+                            )}
+                        </div>
+                    </TabsContent>
+                    <TabsContent value="pulls" className="mt-4">
+                        <div className="p-4 border rounded-md bg-card text-card-foreground">
+                            {projectId && siteId && (
+                                <DataPullsList project_id={projectId} site_id={siteId} />
                             )}
                         </div>
                     </TabsContent>
