@@ -57,6 +57,12 @@ type FilePathCountRow = {
     unique_file_paths: string;
 };
 
+type PullActivityRow = {
+    hour_start: string;
+    modality_key: string | null;
+    pull_count: string;
+};
+
 const CREATED_AT_JSON_REGEX = "^\\d{4}-\\d{2}-\\d{2}([ T].*)?$";
 const DATE_ONLY_JSON_REGEX = "^\\d{4}-\\d{2}-\\d{2}$";
 
@@ -85,6 +91,7 @@ export type MonitoringPayload = {
     }>;
     data_pull_trend_by_subject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>;
     data_pull_trend_by_subject_and_modality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }>;
+    data_pull_activity_last_48h: Array<{ hour_start: string; modality_key: string | null; pull_count: number }>;
     last_warning_logs: Array<{
         timestamp: string;
         level: string;
@@ -306,6 +313,7 @@ export class Monitoring {
         let pullDetailsBySubject: Array<{ subject_id: string; data_source_name: string | null; pull_timestamp: string | null; file_md5: string | null; file_path: string | null; has_file_md5: boolean }> = [];
         let pullTrendBySubject: Array<{ subject_id: string; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }> = [];
         let pullTrendBySubjectAndModality: Array<{ subject_id: string; modality_key: string | null; day: string; pulls_with_unique_file_md5: number; is_consent_date: boolean; file_paths: string[] }> = [];
+        let dataPullActivityLast48h: Array<{ hour_start: string; modality_key: string | null; pull_count: number }> = [];
         let uniqueFilePathsByDataSource: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }> = [];
 
         if (missingSubjectIds.length > 0 && hasDataPullSubjectColumn && dataPullTableSql) {
@@ -467,6 +475,54 @@ export class Monitoring {
                     pulls_with_unique_file_md5: parseCount(row.pulls_with_unique_file_md5),
                     is_consent_date: Boolean(row.is_consent_date),
                     file_paths: row.file_paths ?? [],
+                }));
+
+                const pullActivityLast48hQuery = `
+                    WITH pull_activity AS (
+                        SELECT
+                            date_trunc('hour', ${quoteIdentifier(pullTimestampColumn)}::timestamptz) AS hour_start,
+                            CASE
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp_qc%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlampqc%'
+                                    THEN 'mindlamp_qc_sharepoint'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_recap%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%upenn_redcap%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%penncnb%'
+                                    THEN 'penncnb'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%redcap%'
+                                    THEN 'redcap'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%eeg%'
+                                    THEN 'eeg_sharepoint'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%mindlamp%'
+                                    THEN 'mindlamp'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%cantab%'
+                                    THEN 'cantab'
+                                WHEN LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcript%'
+                                    OR LOWER(COALESCE(${pullSourceSelect}, '')) LIKE '%transcripts%'
+                                    THEN 'transcript_sharepoint'
+                                ELSE NULL
+                            END AS modality_key
+                        FROM ${dataPullTableSql}
+                        WHERE subject_id = ANY($1::text[])
+                        ${hasDataPullProjectColumn ? "AND project_id = $2" : ""}
+                        AND ${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
+                        AND ${quoteIdentifier(pullTimestampColumn)}::timestamptz >= NOW() - INTERVAL '48 hours'
+                    )
+                    SELECT
+                        hour_start,
+                        modality_key,
+                        COUNT(*)::int AS pull_count
+                    FROM pull_activity
+                    WHERE modality_key IS NOT NULL
+                    GROUP BY hour_start, modality_key
+                    ORDER BY hour_start ASC, modality_key NULLS LAST
+                `;
+
+                const pullActivityLast48hResult = await connection.query(pullActivityLast48hQuery, pullTrendParams);
+                dataPullActivityLast48h = (pullActivityLast48hResult.rows as PullActivityRow[]).map((row) => ({
+                    hour_start: row.hour_start,
+                    modality_key: row.modality_key,
+                    pull_count: parseCount(row.pull_count),
                 }));
 
                 const pullTrendByModalityQuery = `
@@ -713,6 +769,7 @@ export class Monitoring {
             data_pull_coverage_by_subject: coverageBySubject,
             data_pull_trend_by_subject: pullTrendBySubject,
             data_pull_trend_by_subject_and_modality: pullTrendBySubjectAndModality,
+            data_pull_activity_last_48h: dataPullActivityLast48h,
             last_warning_logs: lastWarnings,
             metadata: {
                 notes: {

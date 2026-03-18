@@ -44,6 +44,11 @@ type MonitoringResponse = {
         is_consent_date: boolean;
         file_paths: string[];
     }>;
+    data_pull_activity_last_48h: Array<{
+        hour_start: string;
+        modality_key: string | null;
+        pull_count: number;
+    }>;
     last_warning_logs: Array<{
         timestamp: string;
         level: string;
@@ -109,6 +114,25 @@ const asDateKey = (value: string | null | undefined): string | null => {
     return parsed.toISOString().slice(0, 10);
 };
 
+const asHourKey = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    parsed.setMinutes(0, 0, 0);
+    return parsed.toISOString();
+};
+
+const asReadableHour = (value: string | null | undefined): string => {
+    if (!value) return "N/A";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "N/A";
+    return parsed.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+    });
+};
+
 const normalizeDataSourceName = (value: string | null | undefined): string => {
     if (!value) return "unknown";
     const firstUnderscore = value.indexOf("_");
@@ -141,6 +165,13 @@ type TrendPoint = {
     is_consent_date: boolean;
     file_paths: string[];
     segments?: TrendSegment[];
+};
+
+type ActivityBucket = {
+    hourStart: string;
+    label: string;
+    total: number;
+    segments: TrendSegment[];
 };
 
 const mapDataSourceToCoverageModality = (value: string | null | undefined): CoverageModalityKey | null => {
@@ -183,13 +214,6 @@ const TREND_MODALITY_COLOR_BY_KEY: Record<CoverageModalityKey, string> = {
     transcript_sharepoint: "#14b8a6",
 };
 
-const UNCLASSIFIED_TREND_SEGMENT: TrendSegment = {
-    key: "unclassified",
-    label: "Unclassified",
-    count: 0,
-    color: "#94a3b8",
-};
-
 const toGroupedDataSourceLabel = (value: string | null | undefined): string => {
     const modality = mapDataSourceToCoverageModality(value);
     if (modality) {
@@ -210,6 +234,7 @@ export default function MonitoringPage() {
     const [data, setData] = React.useState<MonitoringResponse | null>(null);
     const [loading, setLoading] = React.useState(true);
     const [activeTrendTab, setActiveTrendTab] = React.useState<string>("all");
+    const [trendSubjectFilter, setTrendSubjectFilter] = React.useState("");
 
     const fetchMonitoring = React.useCallback(async (requestedProjectId: string) => {
         setLoading(true);
@@ -317,17 +342,13 @@ export default function MonitoringPage() {
                 const dayKey = asDateKey(row.day) ?? row.day;
                 const compositeKey = `${row.subject_id}::${dayKey}`;
                 const knownSegments = trendBreakdownBySubjectDay.get(compositeKey) ?? [];
-                const knownCount = knownSegments.reduce((sum, segment) => sum + segment.count, 0);
-                const unclassifiedCount = Math.max(0, row.pulls_with_unique_file_md5 - knownCount);
 
                 grouped.get(row.subject_id)?.push({
                     day: row.day,
                     pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
                     is_consent_date: row.is_consent_date,
                     file_paths: row.file_paths,
-                    segments: unclassifiedCount > 0
-                        ? [...knownSegments, { ...UNCLASSIFIED_TREND_SEGMENT, count: unclassifiedCount }]
-                        : knownSegments,
+                    segments: knownSegments,
                 });
             }
         } else {
@@ -356,6 +377,17 @@ export default function MonitoringPage() {
         const allValues = [...trendBySubject.values()].flatMap((rows) => rows.map((row) => row.pulls_with_unique_file_md5));
         return allValues.length > 0 ? Math.max(...allValues) : 1;
     }, [trendBySubject]);
+
+    const filteredTrendEntries = React.useMemo(() => {
+        const normalizedFilter = trendSubjectFilter.trim().toLowerCase();
+        const entries = [...trendBySubject.entries()];
+
+        if (!normalizedFilter) {
+            return entries;
+        }
+
+        return entries.filter(([subjectId]) => subjectId.toLowerCase().includes(normalizedFilter));
+    }, [trendBySubject, trendSubjectFilter]);
 
     const consentDateBySubject = React.useMemo(() => {
         const map = new Map<string, string | null>();
@@ -663,6 +695,98 @@ export default function MonitoringPage() {
         [data]
     );
 
+    const last48HourPullActivity = React.useMemo(() => {
+        const end = new Date();
+        end.setMinutes(0, 0, 0);
+
+        const bucketMap = new Map<string, ActivityBucket>();
+        for (let index = 47; index >= 0; index -= 1) {
+            const bucketDate = new Date(end);
+            bucketDate.setHours(bucketDate.getHours() - index);
+            const key = bucketDate.toISOString();
+            bucketMap.set(key, {
+                hourStart: key,
+                label: asReadableHour(key),
+                total: 0,
+                segments: [],
+            });
+        }
+
+        const breakdownMap = new Map<string, Record<string, number>>();
+
+        for (const row of data?.data_pull_activity_last_48h ?? []) {
+            const hourKey = asHourKey(row.hour_start);
+            if (!hourKey || !bucketMap.has(hourKey)) continue;
+
+            if (!row.modality_key || !COVERAGE_MODALITY_COLUMNS.some((column) => column.key === row.modality_key)) {
+                continue;
+            }
+
+            const modalityKey = row.modality_key;
+            if (!breakdownMap.has(hourKey)) {
+                breakdownMap.set(hourKey, {});
+            }
+
+            const counts = breakdownMap.get(hourKey);
+            if (!counts) continue;
+            counts[modalityKey] = (counts[modalityKey] ?? 0) + row.pull_count;
+        }
+
+        for (const [hourKey, counts] of breakdownMap.entries()) {
+            const bucket = bucketMap.get(hourKey);
+            if (!bucket) continue;
+
+            const knownSegments = COVERAGE_MODALITY_COLUMNS
+                .map((column) => ({
+                    key: column.key,
+                    label: column.label,
+                    count: counts[column.key] ?? 0,
+                    color: TREND_MODALITY_COLOR_BY_KEY[column.key],
+                }))
+                .filter((segment) => segment.count > 0);
+
+            bucket.segments = knownSegments;
+            bucket.total = bucket.segments.reduce((sum, segment) => sum + segment.count, 0);
+        }
+
+        const buckets = [...bucketMap.values()];
+        const totalPulls = buckets.reduce((sum, bucket) => sum + bucket.total, 0);
+        const highestTotal = Math.max(1, ...buckets.map((bucket) => bucket.total));
+        const peakBucket = buckets.reduce<ActivityBucket | null>((currentPeak, bucket) => {
+            if (!currentPeak || bucket.total > currentPeak.total) {
+                return bucket;
+            }
+            return currentPeak;
+        }, null);
+
+        return {
+            buckets,
+            totalPulls,
+            highestTotal,
+            peakBucket,
+            latestBucket: buckets[buckets.length - 1] ?? null,
+        };
+    }, [data]);
+
+    const activityAxisTicks = React.useMemo(() => {
+        const buckets = last48HourPullActivity.buckets;
+        return buckets.flatMap((bucket, index) => {
+            const isFirst = index === 0;
+            const isLast = index === buckets.length - 1;
+            const shouldLabel = isFirst || isLast || index % 6 === 0;
+
+            if (!shouldLabel) {
+                return [];
+            }
+
+            return [{
+                key: bucket.hourStart,
+                label: bucket.label,
+                leftPercent: buckets.length === 1 ? 0 : (index / (buckets.length - 1)) * 100,
+            }];
+        });
+    }, [last48HourPullActivity.buckets]);
+
     return (
         <div className="container mx-auto p-6 max-w-6xl flex flex-col gap-6">
             <Heading icon={monitoringIcon} title="Monitoring" />
@@ -716,6 +840,126 @@ export default function MonitoringPage() {
                                 <p className="text-2xl font-semibold">{data.summary.newly_added_last_night_count}</p>
                             </div>
                         </div>
+                    </section>
+
+                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                        <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                            <div>
+                                <h2 className="text-lg font-semibold">Latest Data Pulls, Last 48 Hours</h2>
+                                <p className="text-sm text-muted-foreground">
+                                    Hourly pull volume for the last 48 hours. Newest hour is on the right.
+                                </p>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-3">
+                                <div className="rounded-md border px-3 py-2">
+                                    <p className="text-muted-foreground">Total Pulls</p>
+                                    <p className="text-xl font-semibold">{last48HourPullActivity.totalPulls}</p>
+                                </div>
+                                <div className="rounded-md border px-3 py-2">
+                                    <p className="text-muted-foreground">Current Hour</p>
+                                    <p className="text-xl font-semibold">{last48HourPullActivity.latestBucket?.total ?? 0}</p>
+                                </div>
+                                <div className="col-span-2 rounded-md border px-3 py-2 md:col-span-1">
+                                    <p className="text-muted-foreground">Peak Hour</p>
+                                    <p className="text-base font-semibold">
+                                        {last48HourPullActivity.peakBucket ? `${last48HourPullActivity.peakBucket.total} at ${last48HourPullActivity.peakBucket.label}` : "N/A"}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {last48HourPullActivity.totalPulls === 0 ? (
+                            <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
+                                No data pulls were recorded in the last 48 hours.
+                            </div>
+                        ) : (
+                            <figure className="rounded-lg border bg-muted/20 p-4">
+                                <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
+                                    {COVERAGE_MODALITY_COLUMNS.map((column) => (
+                                        <span key={column.key} className="inline-flex items-center gap-2">
+                                            <span
+                                                className="h-2.5 w-2.5 rounded-sm border border-black/10"
+                                                style={{ backgroundColor: TREND_MODALITY_COLOR_BY_KEY[column.key] }}
+                                                aria-hidden="true"
+                                            />
+                                            <span>{column.label}</span>
+                                        </span>
+                                    ))}
+                                </div>
+
+                                <div className="relative h-64">
+                                    <div className="absolute inset-y-0 right-0 z-10 border-l-2 border-rose-500/90">
+                                        <span className="absolute -top-6 right-0 translate-x-1/2 whitespace-nowrap rounded bg-rose-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm">
+                                            Now
+                                        </span>
+                                    </div>
+                                    <div className="flex h-full items-end gap-1">
+                                        {last48HourPullActivity.buckets.map((bucket) => {
+                                            const heightPercent = bucket.total > 0
+                                                ? Math.max(4, (bucket.total / last48HourPullActivity.highestTotal) * 100)
+                                                : 2;
+                                            const title = bucket.total > 0
+                                                ? `${bucket.label}: ${bucket.total} pulls\n${bucket.segments.map((segment) => `${segment.label}: ${segment.count}`).join("\n")}`
+                                                : `${bucket.label}: 0 pulls`;
+
+                                            return (
+                                                <div key={bucket.hourStart} className="group flex h-full flex-1 items-end" title={title}>
+                                                    <div className="flex h-full w-full items-end">
+                                                        <div
+                                                            className="flex w-full flex-col justify-end overflow-hidden rounded-sm bg-border/30 transition-opacity group-hover:opacity-90"
+                                                            style={{ height: `${heightPercent}%` }}
+                                                        >
+                                                            {bucket.total > 0 ? (
+                                                                bucket.segments.map((segment) => (
+                                                                    <div
+                                                                        key={`${bucket.hourStart}-${segment.key}`}
+                                                                        style={{
+                                                                            height: `${(segment.count / bucket.total) * 100}%`,
+                                                                            backgroundColor: segment.color,
+                                                                        }}
+                                                                    />
+                                                                ))
+                                                            ) : (
+                                                                <div className="h-full w-full bg-border/50" />
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="mt-4">
+                                    <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                                        Time (local)
+                                    </p>
+                                    <div className="relative h-10 border-t border-dashed border-border/70">
+                                        {activityAxisTicks.map((tick) => (
+                                            <div
+                                                key={tick.key}
+                                                className="absolute top-0"
+                                                style={{ left: `${tick.leftPercent}%` }}
+                                            >
+                                                <div className="h-2 w-px -translate-x-1/2 bg-border/80" />
+                                                <span className="absolute top-3 left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] text-muted-foreground">
+                                                    {tick.label}
+                                                </span>
+                                            </div>
+                                        ))}
+                                        <div className="absolute top-0 right-0">
+                                            <div className="h-2 w-px -translate-x-1/2 bg-rose-500/90" />
+                                            <span className="absolute -top-5 right-0 whitespace-nowrap text-[11px] font-medium text-rose-600 dark:text-rose-400">
+                                                Current time
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <figcaption className="mt-2 text-xs text-muted-foreground">
+                                    Each bar is one hour. Bar height shows total pull count, and stacked colors show the data-source mix within that hour.
+                                </figcaption>
+                            </figure>
+                        )}
                     </section>
 
                     <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
@@ -833,6 +1077,22 @@ export default function MonitoringPage() {
                                 ))}
                             </TabsList>
                         </Tabs>
+                        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                            <div className="w-full md:max-w-sm">
+                                <label htmlFor="trend-subject-filter" className="mb-1 block text-sm font-medium">
+                                    Filter by Subject ID
+                                </label>
+                                <Input
+                                    id="trend-subject-filter"
+                                    value={trendSubjectFilter}
+                                    onChange={(event) => setTrendSubjectFilter(event.target.value)}
+                                    placeholder="Type a subject ID"
+                                />
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                                Showing {filteredTrendEntries.length} subject{filteredTrendEntries.length === 1 ? "" : "s"}
+                            </p>
+                        </div>
                         {activeTrendTab === "all" && (
                             <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
                                 <span>Segment colors show each data type&apos;s share of the day&apos;s total.</span>
@@ -846,21 +1106,13 @@ export default function MonitoringPage() {
                                         <span>{column.label}</span>
                                     </span>
                                 ))}
-                                <span className="inline-flex items-center gap-2">
-                                    <span
-                                        className="h-2.5 w-2.5 rounded-sm border border-black/10"
-                                        style={{ backgroundColor: UNCLASSIFIED_TREND_SEGMENT.color }}
-                                        aria-hidden="true"
-                                    />
-                                    <span>{UNCLASSIFIED_TREND_SEGMENT.label}</span>
-                                </span>
                             </div>
                         )}
                         <div className="space-y-4">
-                            {[...trendBySubject.entries()].length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No trend data for this modality</p>
+                            {filteredTrendEntries.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No trend data for the current modality and subject filter</p>
                             ) : (
-                                [...trendBySubject.entries()].map(([subjectId, points]) => {
+                                filteredTrendEntries.map(([subjectId, points]) => {
                                     const consentDateRaw = consentDateBySubject.get(subjectId) ?? null;
                                     const consentDateKey = asDateKey(consentDateRaw);
 
