@@ -146,6 +146,21 @@ const asReadableHour = (value: string | null | undefined): string => {
     });
 };
 
+const getDaysFromConsentDate = (value: string | null | undefined): number | null => {
+    const dateKey = asDateKey(value);
+    if (!dateKey) return null;
+
+    const [year, month, day] = dateKey.split("-").map(Number);
+    if (!year || !month || !day) return null;
+
+    const consentDate = new Date(year, month - 1, day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const millisecondsPerDay = 24 * 60 * 60 * 1000;
+    return Math.floor((today.getTime() - consentDate.getTime()) / millisecondsPerDay);
+};
+
 const normalizeDataSourceName = (value: string | null | undefined): string => {
     if (!value) return "unknown";
     const firstUnderscore = value.indexOf("_");
@@ -315,6 +330,62 @@ const TREND_MODALITY_COLOR_BY_KEY: Record<CoverageModalityKey, string> = {
     transcript_sharepoint: "#14b8a6",
 };
 
+const MODALITY_COLOR_BY_LABEL: Record<string, string> = COVERAGE_MODALITY_COLUMNS.reduce(
+    (acc, column) => {
+        acc[column.label] = TREND_MODALITY_COLOR_BY_KEY[column.key];
+        return acc;
+    },
+    {} as Record<string, string>
+);
+
+const renderModalityHeader = (label: string, color: string) => (
+    <span className="inline-flex items-center gap-2">
+        <span
+            className="h-2 w-2 rounded-full border border-black/10"
+            style={{ backgroundColor: color }}
+            aria-hidden="true"
+        />
+        <span>{label}</span>
+    </span>
+);
+
+const renderMetricCountCell = (value: number) => {
+    if (value > 0) {
+        return <span className="text-xs font-medium tabular-nums">{value}</span>;
+    }
+
+    return (
+        <span className="inline-flex items-center rounded-full border border-dashed border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            No data
+        </span>
+    );
+};
+
+const renderDaysFromConsentCell = (value: number | null | undefined) => {
+    if (typeof value === "number") {
+        return <span className="text-xs font-medium tabular-nums">{value}</span>;
+    }
+
+    return (
+        <span className="inline-flex items-center rounded-full border border-dashed border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            No consent date
+        </span>
+    );
+};
+
+const compareDaysFromConsent = (left: number | null | undefined, right: number | null | undefined) => {
+    if (typeof left === "number" && typeof right === "number") {
+        return left - right;
+    }
+    if (typeof left === "number") {
+        return -1;
+    }
+    if (typeof right === "number") {
+        return 1;
+    }
+    return 0;
+};
+
 const toGroupedDataSourceLabel = (value: string | null | undefined): string => {
     const modality = mapDataSourceToCoverageModality(value);
     if (modality) {
@@ -336,6 +407,8 @@ export default function MonitoringPage() {
     const [loading, setLoading] = React.useState(true);
     const [activeTrendTab, setActiveTrendTab] = React.useState<string>("all");
     const [trendSubjectFilter, setTrendSubjectFilter] = React.useState("");
+    const [latestPullSourceTab, setLatestPullSourceTab] = React.useState<string>("all");
+    const [latestPullSubjectFilter, setLatestPullSubjectFilter] = React.useState("");
     const [pdfGeneratedAt, setPdfGeneratedAt] = React.useState<string | null>(null);
 
     const fetchMonitoring = React.useCallback(async (requestedProjectId: string) => {
@@ -514,6 +587,13 @@ export default function MonitoringPage() {
     const coverageColumns = React.useMemo<GridColDef[]>(() => {
         const baseColumns: GridColDef[] = [
             { field: "subject_id", headerName: "Participant ID", minWidth: 180, flex: 1 },
+            {
+                field: "days_from_consent_date",
+                headerName: "Days From Consent Date",
+                minWidth: 190,
+                type: "number",
+                renderCell: (params) => renderDaysFromConsentCell(typeof params.value === "number" ? params.value : null),
+            },
             { field: "total_pulls", headerName: "All Pull Records", type: "number", minWidth: 150 },
             { field: "pulls_with_unique_file_md5", headerName: "Unique Files (MD5)", type: "number", minWidth: 170 },
         ];
@@ -521,19 +601,12 @@ export default function MonitoringPage() {
         const modalityColumns = COVERAGE_MODALITY_COLUMNS.map((column): GridColDef => ({
             field: column.key,
             headerName: column.label,
+            renderHeader: () => renderModalityHeader(column.label, TREND_MODALITY_COLOR_BY_KEY[column.key]),
             type: "number",
             minWidth: 180,
             renderCell: (params) => {
                 const value = typeof params.value === "number" ? params.value : 0;
-                if (value > 0) {
-                    return <span className="text-xs font-medium">{value}</span>;
-                }
-
-                return (
-                    <span className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-500/50 dark:bg-amber-900/30 dark:text-amber-300">
-                        N/A
-                    </span>
-                );
+                return renderMetricCountCell(value);
             },
         }));
 
@@ -543,22 +616,22 @@ export default function MonitoringPage() {
     const uniqueFilePathColumns = React.useMemo<GridColDef[]>(
         () => [
             { field: "subject_id", headerName: "Participant ID", minWidth: 180, flex: 1 },
+            {
+                field: "days_from_consent_date",
+                headerName: "Days From Consent Date",
+                minWidth: 190,
+                type: "number",
+                renderCell: (params) => renderDaysFromConsentCell(typeof params.value === "number" ? params.value : null),
+            },
             ...COVERAGE_MODALITY_COLUMNS.map((column): GridColDef => ({
                 field: column.key,
                 headerName: column.label,
+                renderHeader: () => renderModalityHeader(column.label, TREND_MODALITY_COLOR_BY_KEY[column.key]),
                 type: "number",
                 minWidth: 180,
                 renderCell: (params) => {
                     const value = typeof params.value === "number" ? params.value : 0;
-                    if (value > 0) {
-                        return <span className="text-xs font-medium">{value}</span>;
-                    }
-
-                    return (
-                        <span className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-500/50 dark:bg-amber-900/30 dark:text-amber-300">
-                            N/A
-                        </span>
-                    );
+                    return renderMetricCountCell(value);
                 },
             })),
         ],
@@ -601,46 +674,62 @@ export default function MonitoringPage() {
         }
 
         return [...baseBySubject.entries()]
-            .sort(([a], [b]) => a.localeCompare(b))
             .map(([subjectId, modalityCounts]) => ({
                 id: subjectId,
                 subject_id: subjectId,
+                days_from_consent_date: getDaysFromConsentDate(consentDateBySubject.get(subjectId)),
                 ...modalityCounts,
-            }));
-    }, [data]);
+            }))
+            .sort((left, right) => {
+                const dateComparison = compareDaysFromConsent(left.days_from_consent_date, right.days_from_consent_date);
+                if (dateComparison !== 0) {
+                    return dateComparison;
+                }
+                return left.subject_id.localeCompare(right.subject_id);
+            });
+    }, [consentDateBySubject, data]);
 
     const coverageRows = React.useMemo(() => {
-        return (data?.data_pull_coverage_by_subject ?? []).map((row) => {
-            const modalityUniqueMd5 = COVERAGE_MODALITY_COLUMNS.reduce<Record<CoverageModalityKey, number>>((acc, column) => {
-                const uniqueMd5 = new Set(
-                    row.recent_pull_items
-                        .filter((item) => mapDataSourceToCoverageModality(item.data_source_name) === column.key)
-                        .map((item) => item.file_md5)
-                        .filter((value): value is string => Boolean(value))
-                );
+        return (data?.data_pull_coverage_by_subject ?? [])
+            .map((row) => {
+                const modalityUniqueMd5 = COVERAGE_MODALITY_COLUMNS.reduce<Record<CoverageModalityKey, number>>((acc, column) => {
+                    const uniqueMd5 = new Set(
+                        row.recent_pull_items
+                            .filter((item) => mapDataSourceToCoverageModality(item.data_source_name) === column.key)
+                            .map((item) => item.file_md5)
+                            .filter((value): value is string => Boolean(value))
+                    );
 
-                // If there is exactly one unique pull, it must render as 1 (not N/A).
-                acc[column.key] = uniqueMd5.size;
-                return acc;
-            }, {
-                redcap: 0,
-                eeg_sharepoint: 0,
-                mindlamp: 0,
-                mindlamp_qc_sharepoint: 0,
-                penncnb: 0,
-                cantab: 0,
-                transcript_sharepoint: 0,
+                    // If there is exactly one unique pull, it must render as 1 (not N/A).
+                    acc[column.key] = uniqueMd5.size;
+                    return acc;
+                }, {
+                    redcap: 0,
+                    eeg_sharepoint: 0,
+                    mindlamp: 0,
+                    mindlamp_qc_sharepoint: 0,
+                    penncnb: 0,
+                    cantab: 0,
+                    transcript_sharepoint: 0,
+                });
+
+                return {
+                    id: row.subject_id,
+                    subject_id: row.subject_id,
+                    days_from_consent_date: getDaysFromConsentDate(consentDateBySubject.get(row.subject_id)),
+                    total_pulls: row.total_pulls,
+                    pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
+                    ...modalityUniqueMd5,
+                };
+            })
+            .sort((left, right) => {
+                const dateComparison = compareDaysFromConsent(left.days_from_consent_date, right.days_from_consent_date);
+                if (dateComparison !== 0) {
+                    return dateComparison;
+                }
+                return left.subject_id.localeCompare(right.subject_id);
             });
-
-            return {
-                id: row.subject_id,
-                subject_id: row.subject_id,
-                total_pulls: row.total_pulls,
-                pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
-                ...modalityUniqueMd5,
-            };
-        });
-    }, [data]);
+    }, [consentDateBySubject, data]);
 
     const gridSx = React.useMemo(
         () => ({
@@ -784,6 +873,38 @@ export default function MonitoringPage() {
                 data_source_name: row.data_source_name,
             }));
     }, [data, subjectSiteMap]);
+
+    const latestPullSourceTabOptions = React.useMemo(() => {
+        const available = new Set<string>();
+        for (const row of latestDataPullRows) {
+            if (row.data_source_name) {
+                available.add(row.data_source_name);
+            }
+        }
+
+        return [
+            { key: "all", label: "All" },
+            ...[...available]
+                .sort((a, b) => a.localeCompare(b))
+                .map((sourceName) => ({ key: sourceName, label: sourceName })),
+        ];
+    }, [latestDataPullRows]);
+
+    React.useEffect(() => {
+        if (!latestPullSourceTabOptions.some((tab) => tab.key === latestPullSourceTab)) {
+            setLatestPullSourceTab("all");
+        }
+    }, [latestPullSourceTab, latestPullSourceTabOptions]);
+
+    const filteredLatestDataPullRows = React.useMemo(() => {
+        const normalizedSubjectFilter = latestPullSubjectFilter.trim().toLowerCase();
+
+        return latestDataPullRows.filter((row) => {
+            const matchesSource = latestPullSourceTab === "all" || row.data_source_name === latestPullSourceTab;
+            const matchesSubject = !normalizedSubjectFilter || row.subject_id.toLowerCase().includes(normalizedSubjectFilter);
+            return matchesSource && matchesSubject;
+        });
+    }, [latestDataPullRows, latestPullSourceTab, latestPullSubjectFilter]);
 
     const warningColumns = React.useMemo<GridColDef[]>(
         () => [
@@ -935,7 +1056,7 @@ export default function MonitoringPage() {
     );
 
     const latestDataPullPrintRows = React.useMemo<PrintTableRow[]>(
-        () => latestDataPullRows.map((row) => ({
+        () => filteredLatestDataPullRows.map((row) => ({
             id: String(row.id),
             pull_timestamp: row.pull_timestamp,
             file_name: row.file_name,
@@ -943,7 +1064,7 @@ export default function MonitoringPage() {
             subject_id: row.subject_id,
             data_source_name: row.data_source_name,
         })),
-        [latestDataPullRows]
+        [filteredLatestDataPullRows]
     );
 
     const warningPrintRows = React.useMemo<PrintTableRow[]>(
@@ -964,10 +1085,13 @@ export default function MonitoringPage() {
             id: String(row.id),
             title: String(row.subject_id),
             subtitle: "Unique file paths by data source",
-            metrics: COVERAGE_MODALITY_COLUMNS.map((column) => ({
-                label: column.label,
-                value: row[column.key],
-            })),
+            metrics: [
+                { label: "Days From Consent Date", value: typeof row.days_from_consent_date === "number" ? row.days_from_consent_date : "No consent date" },
+                ...COVERAGE_MODALITY_COLUMNS.map((column) => ({
+                    label: column.label,
+                    value: row[column.key],
+                })),
+            ],
         })),
         [uniqueFilePathRows]
     );
@@ -977,10 +1101,13 @@ export default function MonitoringPage() {
             id: String(row.id),
             title: String(row.subject_id),
             subtitle: `All Pull Records: ${row.total_pulls} | Unique Files (MD5): ${row.pulls_with_unique_file_md5}`,
-            metrics: COVERAGE_MODALITY_COLUMNS.map((column) => ({
-                label: column.label,
-                value: row[column.key],
-            })),
+            metrics: [
+                { label: "Days From Consent Date", value: typeof row.days_from_consent_date === "number" ? row.days_from_consent_date : "No consent date" },
+                ...COVERAGE_MODALITY_COLUMNS.map((column) => ({
+                    label: column.label,
+                    value: row[column.key],
+                })),
+            ],
         })),
         [coverageRows]
     );
@@ -1275,13 +1402,20 @@ export default function MonitoringPage() {
                         )}
                         <div className="monitoring-print-hide">
                             <MuiThemeProvider theme={muiTheme}>
-                                <div className="h-[220px] w-full">
+                                <div className="h-[420px] w-full">
                                     <DataGrid
                                         rows={uniqueFilePathRows}
                                         columns={uniqueFilePathColumns}
                                         sx={gridSx}
                                         disableRowSelectionOnClick
-                                        hideFooter
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{
+                                            pagination: {
+                                                paginationModel: { pageSize: 10, page: 0 },
+                                            },
+                                        }}
+                                        localeText={{ noRowsLabel: "No records" }}
                                     />
                                 </div>
                             </MuiThemeProvider>
@@ -1322,10 +1456,44 @@ export default function MonitoringPage() {
                     <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Latest 200 data pulls</h2>
                         <div className="monitoring-print-hide">
+                            <Tabs value={latestPullSourceTab} onValueChange={setLatestPullSourceTab} className="w-full">
+                                <TabsList className="mb-3 flex h-auto w-full flex-wrap justify-start gap-2">
+                                    {latestPullSourceTabOptions.map((tab) => (
+                                        <TabsTrigger key={tab.key} value={tab.key}>
+                                            <span className="inline-flex items-center gap-2">
+                                                {tab.key !== "all" && MODALITY_COLOR_BY_LABEL[tab.label] ? (
+                                                    <span
+                                                        className="h-2 w-2 rounded-full border border-black/10"
+                                                        style={{ backgroundColor: MODALITY_COLOR_BY_LABEL[tab.label] }}
+                                                        aria-hidden="true"
+                                                    />
+                                                ) : null}
+                                                <span>{tab.label}</span>
+                                            </span>
+                                        </TabsTrigger>
+                                    ))}
+                                </TabsList>
+                            </Tabs>
+                            <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                                <div className="w-full md:max-w-sm">
+                                    <label htmlFor="latest-pulls-subject-filter" className="mb-1 block text-sm font-medium">
+                                        Filter by Subject ID
+                                    </label>
+                                    <Input
+                                        id="latest-pulls-subject-filter"
+                                        value={latestPullSubjectFilter}
+                                        onChange={(event) => setLatestPullSubjectFilter(event.target.value)}
+                                        placeholder="Type a subject ID"
+                                    />
+                                </div>
+                                <p className="text-sm text-muted-foreground">
+                                    Showing {filteredLatestDataPullRows.length} record{filteredLatestDataPullRows.length === 1 ? "" : "s"}
+                                </p>
+                            </div>
                             <MuiThemeProvider theme={muiTheme}>
                                 <div className="h-[360px] w-full">
                                     <DataGrid
-                                        rows={latestDataPullRows}
+                                        rows={filteredLatestDataPullRows}
                                         columns={latestDataPullColumns}
                                         sx={gridSx}
                                         disableRowSelectionOnClick
