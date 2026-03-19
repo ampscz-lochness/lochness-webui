@@ -146,8 +146,13 @@
   }
 }
 
+/* Default (screen): hide print-only blocks and show web UI blocks. */
 .monitoring-print-only {
-  display: none;
+  display: none !important;
+}
+
+.monitoring-print-hide {
+  display: block !important;
 }
 
 @media print {

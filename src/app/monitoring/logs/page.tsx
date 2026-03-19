@@ -25,6 +25,13 @@ type MonitoringResponse = {
         }>;
         newly_added_last_night_count: number;
     };
+    subjects_with_consent_date: Array<{
+        subject_id: string;
+        site_id: string;
+        consent_date: string | null;
+        mindlamp_id: string | null;
+        cantab_id: string | null;
+    }>;
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
     consent_dates_by_subject: Array<{ subject_id: string; consent_date: string | null }>;
     unique_file_paths_by_data_source: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }>;
@@ -664,26 +671,26 @@ export default function MonitoringPage() {
         [isDarkMode]
     );
 
-    const consentBySiteColumns = React.useMemo<GridColDef[]>(
+    const consentBySubjectColumns = React.useMemo<GridColDef[]>(
         () => [
+            { field: "subject_id", headerName: "Subject ID", minWidth: 180, flex: 1.2 },
             { field: "site_id", headerName: "Site ID", minWidth: 160, flex: 1 },
-            { field: "subject_ids", headerName: "Subject IDs", minWidth: 300, flex: 2 },
+            { field: "consent_date", headerName: "Consent Date", minWidth: 170, flex: 1 },
             { field: "mindlamp_ids", headerName: "MindLAMP IDs", minWidth: 220, flex: 1.5 },
             { field: "cantab_ids", headerName: "CANTAB IDs", minWidth: 220, flex: 1.5 },
-            { field: "count", headerName: "Count", type: "number", minWidth: 110 },
         ],
         []
     );
 
-    const consentBySiteRows = React.useMemo(
+    const consentBySubjectRows = React.useMemo(
         () =>
-            (data?.summary.subjects_missing_required_variables_by_site ?? []).map((row) => ({
-                id: row.site_id,
+            (data?.subjects_with_consent_date ?? []).map((row) => ({
+                id: row.subject_id,
+                subject_id: row.subject_id,
                 site_id: row.site_id,
-                subject_ids: row.subject_ids?.join(", ") || "N/A",
-                mindlamp_ids: row.mindlamp_ids?.join(", ") || "N/A",
-                cantab_ids: row.cantab_ids?.join(", ") || "N/A",
-                count: row.count,
+                consent_date: asReadableDate(row.consent_date),
+                mindlamp_ids: row.mindlamp_id || "N/A",
+                cantab_ids: row.cantab_id || "N/A",
             })),
         [data]
     );
@@ -710,10 +717,8 @@ export default function MonitoringPage() {
 
     const subjectSiteMap = React.useMemo(() => {
         const map = new Map<string, string>();
-        for (const row of data?.summary.subjects_missing_required_variables_by_site ?? []) {
-            for (const subjectId of row.subject_ids) {
-                map.set(subjectId, row.site_id);
-            }
+        for (const row of data?.subjects_with_consent_date ?? []) {
+            map.set(row.subject_id, row.site_id);
         }
         return map;
     }, [data]);
@@ -908,15 +913,15 @@ export default function MonitoringPage() {
     }, [last48HourPullActivity.buckets]);
 
     const consentPrintRows = React.useMemo<PrintTableRow[]>(
-        () => consentBySiteRows.map((row) => ({
+        () => consentBySubjectRows.map((row) => ({
             id: String(row.id),
+            subject_id: row.subject_id,
             site_id: row.site_id,
-            count: row.count,
-            subject_ids: row.subject_ids,
+            consent_date: row.consent_date,
             mindlamp_ids: row.mindlamp_ids,
             cantab_ids: row.cantab_ids,
         })),
-        [consentBySiteRows]
+        [consentBySubjectRows]
     );
 
     const newlyAddedPrintRows = React.useMemo<PrintTableRow[]>(
@@ -1039,18 +1044,20 @@ export default function MonitoringPage() {
                 <>
                     <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <h2 className="text-lg font-semibold mb-3">Summary</h2>
-                        <div className="monitoring-print-hide grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                            <div className="border rounded-md p-3">
-                                <p className="text-muted-foreground">Subjects With Consent Date</p>
-                                <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_count}</p>
-                            </div>
-                            <div className="border rounded-md p-3">
-                                <p className="text-muted-foreground">Sites With Any Consented Subject</p>
-                                <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_by_site.length}</p>
-                            </div>
-                            <div className="border rounded-md p-3">
-                                <p className="text-muted-foreground">Newly Added Subjects Last Night</p>
-                                <p className="text-2xl font-semibold">{data.summary.newly_added_last_night_count}</p>
+                        <div className="monitoring-print-hide overflow-x-auto">
+                            <div className="grid min-w-[760px] grid-cols-3 gap-3 text-sm">
+                                <div className="border rounded-md p-3">
+                                    <p className="text-muted-foreground">Subjects With Consent Date</p>
+                                    <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_count}</p>
+                                </div>
+                                <div className="border rounded-md p-3">
+                                    <p className="text-muted-foreground">Sites With Any Consented Subject</p>
+                                    <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_by_site.length}</p>
+                                </div>
+                                <div className="border rounded-md p-3">
+                                    <p className="text-muted-foreground">Newly Added Subjects (Last 48 Hours)</p>
+                                    <p className="text-2xl font-semibold">{data.summary.newly_added_last_night_count}</p>
+                                </div>
                             </div>
                         </div>
                         <div className="monitoring-print-only rounded-md border border-slate-300 bg-white p-3">
@@ -1071,7 +1078,7 @@ export default function MonitoringPage() {
                                         <td className="border border-slate-300 px-2 py-1">{data.summary.subjects_missing_required_variables_by_site.length}</td>
                                     </tr>
                                     <tr>
-                                        <td className="border border-slate-300 px-2 py-1">Newly Added Subjects Last Night</td>
+                                        <td className="border border-slate-300 px-2 py-1">Newly Added Subjects (Last 48 Hours)</td>
                                         <td className="border border-slate-300 px-2 py-1">{data.summary.newly_added_last_night_count}</td>
                                     </tr>
                                 </tbody>
@@ -1205,8 +1212,8 @@ export default function MonitoringPage() {
                             <MuiThemeProvider theme={muiTheme}>
                                 <div className="h-[320px] w-full">
                                     <DataGrid
-                                        rows={consentBySiteRows}
-                                        columns={consentBySiteColumns}
+                                        rows={consentBySubjectRows}
+                                        columns={consentBySubjectColumns}
                                         sx={gridSx}
                                         disableRowSelectionOnClick
                                         hideFooterSelectedRowCount
@@ -1219,11 +1226,11 @@ export default function MonitoringPage() {
                         </div>
                         <PrintTable
                             columns={[
+                                { key: "subject_id", label: "Subject ID", className: "w-[21%]" },
                                 { key: "site_id", label: "Site ID", className: "w-[9%]" },
-                                { key: "count", label: "Count", className: "w-[7%]" },
-                                { key: "subject_ids", label: "Subject IDs", className: "w-[36%]" },
-                                { key: "mindlamp_ids", label: "MindLAMP IDs", className: "w-[24%]" },
-                                { key: "cantab_ids", label: "CANTAB IDs", className: "w-[24%]" },
+                                { key: "consent_date", label: "Consent Date", className: "w-[15%]" },
+                                { key: "mindlamp_ids", label: "MindLAMP ID", className: "w-[27%]" },
+                                { key: "cantab_ids", label: "CANTAB ID", className: "w-[28%]" },
                             ]}
                             rows={consentPrintRows}
                             emptyLabel="No records"
@@ -1231,7 +1238,7 @@ export default function MonitoringPage() {
                     </section>
 
                     <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
-                        <h2 className="text-lg font-semibold mb-3">Newly Added Subjects</h2>
+                        <h2 className="text-lg font-semibold mb-3">Newly Added Subjects (Last 48 Hours)</h2>
                         <div className="monitoring-print-hide">
                             <MuiThemeProvider theme={muiTheme}>
                                 <div className="h-[320px] w-full">

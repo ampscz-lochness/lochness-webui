@@ -81,6 +81,13 @@ export type MonitoringPayload = {
         }>;
         newly_added_last_night_count: number;
     };
+    subjects_with_consent_date: Array<{
+        subject_id: string;
+        site_id: string;
+        consent_date: string | null;
+        mindlamp_id: string | null;
+        cantab_id: string | null;
+    }>;
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
     consent_dates_by_subject: Array<{ subject_id: string; consent_date: string | null }>;
     unique_file_paths_by_data_source: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }>;
@@ -312,7 +319,7 @@ export class Monitoring {
             return acc;
         }, {});
 
-        const sinceLastNightQuery = `
+        const sinceLast48HoursQuery = `
             SELECT
                 subject_id,
                 site_id,
@@ -320,12 +327,12 @@ export class Monitoring {
             FROM public.subjects
             WHERE project_id = $1
             AND COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = ''
-            AND ${subjectCreatedAtExpression} >= date_trunc('day', now()) - interval '1 day'
-            AND ${subjectCreatedAtExpression} < date_trunc('day', now())
+            AND ${subjectCreatedAtExpression} >= now() - interval '48 hours'
+            AND ${subjectCreatedAtExpression} <= now()
             ORDER BY created_at DESC NULLS LAST
         `;
 
-        const sinceLastNightResult = await connection.query(sinceLastNightQuery, [projectId]);
+        const sinceLast48HoursResult = await connection.query(sinceLast48HoursQuery, [projectId]);
 
         let consentDatesBySubject: Array<{ subject_id: string; consent_date: string | null }> = [];
         if (missingSubjectIds.length > 0) {
@@ -785,6 +792,18 @@ export class Monitoring {
             };
         });
 
+        const consentDateBySubjectMap = new Map(
+            consentDatesBySubject.map((entry) => [entry.subject_id, entry.consent_date])
+        );
+
+        const subjectsWithConsentDate = missingSubjects.map((row) => ({
+            subject_id: row.subject_id,
+            site_id: row.site_id,
+            consent_date: consentDateBySubjectMap.get(row.subject_id) ?? null,
+            mindlamp_id: row.mindlamp_id,
+            cantab_id: row.cantab_id,
+        }));
+
         return {
             project_id: projectId,
             summary: {
@@ -796,9 +815,10 @@ export class Monitoring {
                     mindlamp_ids: [...values.mindlamp_ids].sort((a, b) => a.localeCompare(b)),
                     cantab_ids: [...values.cantab_ids].sort((a, b) => a.localeCompare(b)),
                 })),
-                newly_added_last_night_count: sinceLastNightResult.rows.length,
+                newly_added_last_night_count: sinceLast48HoursResult.rows.length,
             },
-            newly_added_last_night: (sinceLastNightResult.rows as SubjectRow[]).map((row) => ({
+            subjects_with_consent_date: subjectsWithConsentDate,
+            newly_added_last_night: (sinceLast48HoursResult.rows as SubjectRow[]).map((row) => ({
                 subject_id: row.subject_id,
                 site_id: row.site_id,
                 created_at: row.created_at,
