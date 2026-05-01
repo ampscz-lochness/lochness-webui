@@ -1014,7 +1014,6 @@ export default function DayTrackerPage() {
                                                                     `${day.modality_key}: ${day.unique_file_count} file${day.unique_file_count === 1 ? "" : "s"}`,
                                                                     ...(day.file_paths.length > 0 ? ["", ...day.file_paths.slice(0, 3).map(asFileName)] : []),
                                                                 ];
-                                                                const tip = tipLines.join("\n");
                                                                 return (
                                                                     <div
                                                                         key={`${day.modality_key}-${day.day_offset_from_day1a}`}
