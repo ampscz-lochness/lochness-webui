@@ -11,6 +11,7 @@ import { Heading } from "@/components/heading";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 type MonitoringResponse = {
     project_id: string;
@@ -1274,28 +1275,35 @@ export default function MonitoringPage() {
                                                 : `${bucket.label}: 0 pulls`;
 
                                             return (
-                                                <div key={bucket.hourStart} className="group flex h-full flex-1 items-end" title={title}>
-                                                    <div className="flex h-full w-full items-end">
-                                                        <div
-                                                            className="flex w-full flex-col justify-end overflow-hidden rounded-sm bg-border/30 transition-opacity group-hover:opacity-90"
-                                                            style={{ height: `${heightPercent}%` }}
-                                                        >
-                                                            {bucket.total > 0 ? (
-                                                                bucket.segments.map((segment) => (
-                                                                    <div
-                                                                        key={`${bucket.hourStart}-${segment.key}`}
-                                                                        style={{
-                                                                            height: `${(segment.count / bucket.total) * 100}%`,
-                                                                            backgroundColor: segment.color,
-                                                                        }}
-                                                                    />
-                                                                ))
-                                                            ) : (
-                                                                <div className="h-full w-full bg-border/50" />
-                                                            )}
+                                                <Tooltip key={bucket.hourStart}>
+                                                    <TooltipTrigger asChild>
+                                                        <div className="group flex h-full flex-1 items-end">
+                                                            <div className="flex h-full w-full items-end">
+                                                                <div
+                                                                    className="flex w-full flex-col justify-end overflow-hidden rounded-sm bg-border/30 transition-opacity group-hover:opacity-90"
+                                                                    style={{ height: `${heightPercent}%` }}
+                                                                >
+                                                                    {bucket.total > 0 ? (
+                                                                        bucket.segments.map((segment) => (
+                                                                            <div
+                                                                                key={`${bucket.hourStart}-${segment.key}`}
+                                                                                style={{
+                                                                                    height: `${(segment.count / bucket.total) * 100}%`,
+                                                                                    backgroundColor: segment.color,
+                                                                                }}
+                                                                            />
+                                                                        ))
+                                                                    ) : (
+                                                                        <div className="h-full w-full bg-border/50" />
+                                                                    )}
+                                                                </div>
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                </div>
+                                                    </TooltipTrigger>
+                                                    <TooltipContent>
+                                                        <pre className="whitespace-pre-wrap text-xs">{title}</pre>
+                                                    </TooltipContent>
+                                                </Tooltip>
                                             );
                                         })}
                                     </div>
@@ -1612,15 +1620,18 @@ export default function MonitoringPage() {
                                                                         <div className="flex h-full overflow-hidden rounded" style={{ width: `${widthPercent}%` }}>
                                                                             {showStackedSegments ? (
                                                                                 stackedSegments.map((segment) => (
-                                                                                    <div
-                                                                                        key={`${subjectId}-${point.day}-${segment.key}`}
-                                                                                        className="h-full first:rounded-l last:rounded-r"
-                                                                                        style={{
-                                                                                            width: `${(segment.count / point.pulls_with_unique_file_md5) * 100}%`,
-                                                                                            backgroundColor: segment.color,
-                                                                                        }}
-                                                                                        title={`${segment.label}: ${segment.count}`}
-                                                                                    />
+                                                                                    <Tooltip key={`${subjectId}-${point.day}-${segment.key}`}>
+                                                                                        <TooltipTrigger asChild>
+                                                                                            <div
+                                                                                                className="h-full first:rounded-l last:rounded-r"
+                                                                                                style={{
+                                                                                                    width: `${(segment.count / point.pulls_with_unique_file_md5) * 100}%`,
+                                                                                                    backgroundColor: segment.color,
+                                                                                                }}
+                                                                                            />
+                                                                                        </TooltipTrigger>
+                                                                                        <TooltipContent>{segment.label}: {segment.count}</TooltipContent>
+                                                                                    </Tooltip>
                                                                                 ))
                                                                             ) : (
                                                                                 <div
@@ -1651,9 +1662,12 @@ export default function MonitoringPage() {
                                                                 <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 sm:ml-[168px]">
                                                                     <ul className="max-h-32 space-y-1 overflow-y-auto pr-1 text-[11px] text-foreground/90">
                                                                         {point.file_paths.map((filePath, index) => (
-                                                                            <li key={`${subjectId}-${point.day}-${filePath}-${index}`} className="truncate" title={filePath}>
-                                                                                {asFileName(filePath)}
-                                                                            </li>
+                                                                            <Tooltip key={`${subjectId}-${point.day}-${filePath}-${index}`}>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <li className="truncate">{asFileName(filePath)}</li>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent className="max-w-xs break-all">{filePath}</TooltipContent>
+                                                                            </Tooltip>
                                                                         ))}
                                                                     </ul>
                                                                 </div>

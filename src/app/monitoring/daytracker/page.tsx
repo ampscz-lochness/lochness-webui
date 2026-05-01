@@ -8,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import type { DayTrackerPayload, RedcapEventRecord } from "@/types/daytracker";
 
 // ── Modality config (mirrors monitoring/logs/page.tsx) ──────────────────────
@@ -519,9 +520,13 @@ export default function DayTrackerPage() {
                                                     <th
                                                         key={ev.event_name}
                                                         className="min-w-[110px] border border-border bg-muted px-2 py-1.5 text-center font-semibold"
-                                                        title={ev.event_name}
                                                     >
-                                                        {ev.event_label}
+                                                        <Tooltip>
+                                                            <TooltipTrigger asChild>
+                                                                <span>{ev.event_label}</span>
+                                                            </TooltipTrigger>
+                                                            <TooltipContent>{ev.event_name}</TooltipContent>
+                                                        </Tooltip>
                                                     </th>
                                                 ))}
                                             </tr>
@@ -551,28 +556,61 @@ export default function DayTrackerPage() {
                                                             <span className="inline-flex items-center gap-1.5">
                                                                 <span className="font-medium">{subject.subject_id}</span>
                                                                 {subject.is_consented ? (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nMeaning: Consent date is recorded and subject is eligible for Day Tracker display.\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
+                                                                    <span
+                                                                        className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600"
+                                                                        onMouseEnter={(e) =>
+                                                                            showTooltip(e, [
+                                                                                "Consented",
+                                                                                "Meaning: Consent date is recorded and subject is eligible for Day Tracker display.",
+                                                                                "Source: lochnessdb.subjects.subject_metadata->>'consent_date'",
+                                                                                `Value: ${asReadableDate(subject.consent_date)}`,
+                                                                            ])
+                                                                        }
+                                                                        onMouseMove={(e) =>
+                                                                            showTooltip(e, [
+                                                                                "Consented",
+                                                                                "Meaning: Consent date is recorded and subject is eligible for Day Tracker display.",
+                                                                                "Source: lochnessdb.subjects.subject_metadata->>'consent_date'",
+                                                                                `Value: ${asReadableDate(subject.consent_date)}`,
+                                                                            ])
+                                                                        }
+                                                                        onMouseLeave={hideTooltip}
+                                                                    >
                                                                         ✓
                                                                     </span>
                                                                 ) : (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nMeaning: Subject is tracked in source data but consent is missing or incomplete.\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
-                                                                        !
-                                                                    </span>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500">!</span>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent className="whitespace-pre-line max-w-xs">{"No consent date recorded\nMeaning: Subject is tracked in source data but consent is missing or incomplete.\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date"}</TooltipContent>
+                                                                    </Tooltip>
                                                                 )}
                                                                 {subject.is_withdrawn && (
-                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nMeaning: Subject entered study but exited before completing protocol follow-up.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
-                                                                        W
-                                                                    </span>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600">W</span>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent className="whitespace-pre-line max-w-xs">{"Early withdrawal\nMeaning: Subject entered study but exited before completing protocol follow-up.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'"}</TooltipContent>
+                                                                    </Tooltip>
                                                                 )}
                                                                 {subject.is_screen_failed && (
-                                                                    <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={screenFailBadge.title}>
+                                                                    <span
+                                                                        className="inline-flex h-4 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700"
+                                                                        onMouseEnter={(e) => showTooltip(e, screenFailBadge.title.split("\n"))}
+                                                                        onMouseMove={(e) => showTooltip(e, screenFailBadge.title.split("\n"))}
+                                                                        onMouseLeave={hideTooltip}
+                                                                    >
                                                                         {screenFailBadge.badgeText}
                                                                     </span>
                                                                 )}
                                                                 {!subject.is_screen_failed && !originalSubjectMap.get(subject.subject_id)?.redcap_events.some(e => /day_1a_predose/i.test(e.event_name)) && (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-yellow-300 text-[9px] font-bold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
-                                                                        ?
-                                                                    </span>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-yellow-300 text-[9px] font-bold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950">?</span>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent>No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase</TooltipContent>
+                                                                    </Tooltip>
                                                                 )}
                                                             </span>
                                                             <span className="block text-[9px] text-muted-foreground/50 select-none">{isExpanded ? "▲ collapse" : "▼ expand"}</span>
@@ -626,7 +664,6 @@ export default function DayTrackerPage() {
                                                                 <td
                                                                     key={ev.event_name}
                                                                     className={`border border-border px-1 py-1 ${isLatestCell ? "bg-amber-50/70 ring-1 ring-inset ring-amber-300" : ""}`}
-                                                                    title={tooltipLines.join("\n")}
                                                                     onMouseEnter={(e) => showTooltip(e, tooltipLines)}
                                                                     onMouseMove={(e) => showTooltip(e, tooltipLines)}
                                                                     onMouseLeave={hideTooltip}
@@ -715,7 +752,7 @@ export default function DayTrackerPage() {
                                                                                         <td className="border border-border px-2 py-1 text-muted-foreground">{rec.record_type}</td>
                                                                                         <td className="border border-border px-2 py-1">{rec.form_name ?? "—"}</td>
                                                                                         <td className="border border-border px-2 py-1 font-mono text-[10px]">{rec.field_name ?? "—"}</td>
-                                                                                        <td className="border border-border px-2 py-1 max-w-[220px] truncate" title={rec.file_path ?? undefined}>{rec.file_path ? asFileName(rec.file_path) : "—"}</td>
+                                                                                        <td className="border border-border px-2 py-1 max-w-[220px]">{rec.file_path ? (<Tooltip><TooltipTrigger asChild><span className="block truncate">{asFileName(rec.file_path)}</span></TooltipTrigger><TooltipContent className="max-w-xs break-all">{rec.file_path}</TooltipContent></Tooltip>) : "—"}</td>
                                                                                     </tr>
                                                                                 ))
                                                                             }
@@ -773,8 +810,8 @@ export default function DayTrackerPage() {
                                                                         </td>
                                                                         <td className="border border-border px-2 py-1">{rec.form_name ?? "—"}</td>
                                                                         <td className="border border-border px-2 py-1 font-mono text-[10px]">{rec.field_name ?? "—"}</td>
-                                                                        <td className="border border-border px-2 py-1 max-w-[200px] truncate" title={rec.file_path ?? undefined}>
-                                                                            {rec.file_path ? asFileName(rec.file_path) : "—"}
+                                                                        <td className="border border-border px-2 py-1 max-w-[200px]">
+                                                                            {rec.file_path ? (<Tooltip><TooltipTrigger asChild><span className="block truncate">{asFileName(rec.file_path)}</span></TooltipTrigger><TooltipContent className="max-w-xs break-all">{rec.file_path}</TooltipContent></Tooltip>) : "—"}
                                                                         </td>
                                                                     </tr>
                                                                 ))}
@@ -845,30 +882,44 @@ export default function DayTrackerPage() {
                                                 >
                                                     <div className="flex items-center gap-2 mb-0.5">
                                                         <span className="text-sm font-semibold">{subject.subject_id}</span>
-                                                        <span className="text-xs text-muted-foreground">{subject.site_id}</span>
                                                         {subject.is_consented ? (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nMeaning: Consent date is recorded and subject is eligible for Day Tracker display.\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
-                                                                ✓
-                                                            </span>
+                                                            <Tooltip>
+                                                                <TooltipTrigger asChild>
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600">✓</span>
+                                                                </TooltipTrigger>
+                                                                <TooltipContent className="whitespace-pre-line max-w-xs">{`Consented\nMeaning: Consent date is recorded and subject is eligible for Day Tracker display.\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}</TooltipContent>
+                                                            </Tooltip>
                                                         ) : (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nMeaning: Subject is tracked in source data but consent is missing or incomplete.\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
-                                                                !
-                                                            </span>
+                                                            <Tooltip>
+                                                                <TooltipTrigger asChild>
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500">!</span>
+                                                                </TooltipTrigger>
+                                                                <TooltipContent className="whitespace-pre-line max-w-xs">{"No consent date recorded\nMeaning: Subject is tracked in source data but consent is missing or incomplete.\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date"}</TooltipContent>
+                                                            </Tooltip>
                                                         )}
                                                         {subject.is_withdrawn && (
-                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nMeaning: Subject entered study but exited before completing protocol follow-up.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
-                                                                W
-                                                            </span>
+                                                            <Tooltip>
+                                                                <TooltipTrigger asChild>
+                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600">W</span>
+                                                                </TooltipTrigger>
+                                                                <TooltipContent className="whitespace-pre-line max-w-xs">{"Early withdrawal\nMeaning: Subject entered study but exited before completing protocol follow-up.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'"}</TooltipContent>
+                                                            </Tooltip>
                                                         )}
                                                         {subject.is_screen_failed && (
-                                                            <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={screenFailBadge.title}>
-                                                                {screenFailBadge.badgeText}
-                                                            </span>
+                                                            <Tooltip>
+                                                                <TooltipTrigger asChild>
+                                                                    <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700">{screenFailBadge.badgeText}</span>
+                                                                </TooltipTrigger>
+                                                                <TooltipContent className="whitespace-pre-line max-w-xs">{screenFailBadge.title}</TooltipContent>
+                                                            </Tooltip>
                                                         )}
                                                         {!subject.is_screen_failed && !timeline?.day1aDate && (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-yellow-300 text-[9px] font-bold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
-                                                                ?
-                                                            </span>
+                                                            <Tooltip>
+                                                                <TooltipTrigger asChild>
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-yellow-300 text-[9px] font-bold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950">?</span>
+                                                                </TooltipTrigger>
+                                                                <TooltipContent>No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase</TooltipContent>
+                                                            </Tooltip>
                                                         )}
                                                         <span className="ml-auto text-[9px] text-muted-foreground/50 select-none">{isExpanded ? "▲ collapse" : "▼ expand"}</span>
                                                     </div>
@@ -969,7 +1020,6 @@ export default function DayTrackerPage() {
                                                                         key={`${day.modality_key}-${day.day_offset_from_day1a}`}
                                                                         className="absolute bottom-0 overflow-hidden rounded-sm"
                                                                         style={{ left: `${xLeft}%`, width: `${barW}%`, height: `${hPct}%`, minWidth: "3px", backgroundColor: color }}
-                                                                        title={tip}
                                                                         onMouseEnter={(e) => { e.stopPropagation(); showTooltip(e, tipLines); }}
                                                                         onMouseMove={(e) => { e.stopPropagation(); showTooltip(e, tipLines); }}
                                                                         onMouseLeave={hideTooltip}
@@ -989,7 +1039,7 @@ export default function DayTrackerPage() {
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Day from 1a</th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Modality</th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Files</th>
-                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Sample file</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">File list</th>
                                                                     </tr>
                                                                 </thead>
                                                                 <tbody>
@@ -1006,7 +1056,22 @@ export default function DayTrackerPage() {
                                                                                     </span>
                                                                                 </td>
                                                                                 <td className="border border-border px-2 py-1">{day.unique_file_count}</td>
-                                                                                <td className="border border-border px-2 py-1 max-w-[220px] truncate text-muted-foreground" title={day.file_paths[0]}>{day.file_paths[0] ? asFileName(day.file_paths[0]) : "—"}</td>
+                                                                                <td className="border border-border px-2 py-1 max-w-[300px]">
+                                                                                    {day.file_paths.length === 0 ? (
+                                                                                        <span className="text-muted-foreground">—</span>
+                                                                                    ) : (
+                                                                                        <ul className="space-y-0.5 list-none m-0 p-0">
+                                                                                            {day.file_paths.map((fp, fi) => (
+                                                                                                <Tooltip key={fi}>
+                                                                                                    <TooltipTrigger asChild>
+                                                                                                        <li className="truncate text-muted-foreground">{asFileName(fp)}</li>
+                                                                                                    </TooltipTrigger>
+                                                                                                    <TooltipContent className="max-w-xs break-all">{fp}</TooltipContent>
+                                                                                                </Tooltip>
+                                                                                            ))}
+                                                                                        </ul>
+                                                                                    )}
+                                                                                </td>
                                                                             </tr>
                                                                         ))
                                                                     }

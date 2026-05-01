@@ -9,6 +9,7 @@ import {
     CardTitle,
 } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip"
 
 import { Project } from "@/types/projects"
 
@@ -37,7 +38,12 @@ export default function ProjectCard({ project }: ProjectCardProps) {
             <Card className="aspect-square bg-white dark:bg-slate-800/70 shadow-sm border border-gray-200 dark:border-emerald-900/30 transition-all hover:shadow-md hover:border-emerald-200 dark:hover:border-emerald-800">
                 <CardHeader className="pb-1">
                     <div className="flex items-center gap-2">
-                        <CardTitle className="text-xl font-medium truncate" title={project_name}>{project_name}</CardTitle>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <CardTitle className="text-xl font-medium truncate">{project_name}</CardTitle>
+                            </TooltipTrigger>
+                            <TooltipContent>{project_name}</TooltipContent>
+                        </Tooltip>
                         <div className={`h-2 w-2 rounded-full ${project_is_active ? 'bg-green-500' : 'bg-gray-400'}`}></div>
                         {/* {project_is_active && Boolean(project_is_active) === true && (
                         <div className="h-2 w-2 rounded-full bg-emerald-500" title="Active project"></div>
@@ -51,12 +57,14 @@ export default function ProjectCard({ project }: ProjectCardProps) {
                     <div>
                         <Label className="text-xs uppercase tracking-wide text-muted-foreground">Description</Label>
                         {description ? (
-                            <p
-                                className="mt-1 text-sm truncate overflow-hidden text-ellipsis"
-                                title={description}
-                            >
-                                {description}
-                            </p>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <p className="mt-1 text-sm truncate overflow-hidden text-ellipsis">
+                                        {description}
+                                    </p>
+                                </TooltipTrigger>
+                                <TooltipContent>{description}</TooltipContent>
+                            </Tooltip>
                         ) : (
                             <p className="mt-1 text-sm text-muted-foreground">No description</p>
                         )}
