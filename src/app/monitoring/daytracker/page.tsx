@@ -7,6 +7,7 @@ import { Heading } from "@/components/heading";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import type { DayTrackerPayload, RedcapEventRecord } from "@/types/daytracker";
 
 // ── Modality config (mirrors monitoring/logs/page.tsx) ──────────────────────
@@ -161,6 +162,7 @@ export default function DayTrackerPage() {
     const [loading, setLoading] = React.useState(true);
     const [activeTab, setActiveTab] = React.useState<"redcap" | "timeline">("redcap");
     const [activeModalityTab, setActiveModalityTab] = React.useState<string>("all");
+    const [showLast24h, setShowLast24h] = React.useState(false);
     const [hoverTooltip, setHoverTooltip] = React.useState<HoverTooltipState | null>(null);
 
     const showTooltip = React.useCallback((event: React.MouseEvent<HTMLElement>, lines: string[]) => {
@@ -204,9 +206,22 @@ export default function DayTrackerPage() {
     // ── Filtered subjects ─────────────────────────────────────────────────────
     const filteredSubjects = React.useMemo(() => {
         const norm = subjectFilter.trim().toLowerCase();
-        const all = data?.activity_by_subject ?? [];
-        return norm ? all.filter((s) => s.subject_id.toLowerCase().includes(norm)) : all;
-    }, [data, subjectFilter]);
+        let all = data?.activity_by_subject ?? [];
+        if (norm) {
+            all = all.filter((s) => s.subject_id.toLowerCase().includes(norm));
+        }
+        if (showLast24h) {
+            const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+            all = all
+                .map((s) => ({
+                    ...s,
+                    redcap_events: s.redcap_events.filter((e) => e.pull_date >= cutoff),
+                    days: s.days.filter((d) => d.calendar_date >= cutoff),
+                }))
+                .filter((s) => s.redcap_events.length > 0 || s.days.length > 0);
+        }
+        return all;
+    }, [data, subjectFilter, showLast24h]);
 
     // ── Modality tabs (for calendar timeline) ─────────────────────────────────
     const modalityTabOptions = React.useMemo(() => {
@@ -228,11 +243,21 @@ export default function DayTrackerPage() {
         if (!modalityTabOptions.some((t) => t.key === activeModalityTab)) setActiveModalityTab("all");
     }, [activeModalityTab, modalityTabOptions]);
 
+    // ── Lookup map for original (unfiltered) subjects ──────────────────────
+    const originalSubjectMap = React.useMemo(() => {
+        const map = new Map<string, DayTrackerPayload["activity_by_subject"][number]>();
+        for (const s of data?.activity_by_subject ?? []) map.set(s.subject_id, s);
+        return map;
+    }, [data]);
+
     // ── Timeline data anchored at REDCap Day 1a ─────────────────────────────
     const timelineBySubject = React.useMemo(() => {
         const map = new Map<string, { day1aDate: string | null; points: TimelinePoint[] }>();
         for (const subject of filteredSubjects) {
-            const day1aDate = findSubjectDay1aDate(subject.redcap_events);
+            // Always use the unfiltered events for the Day 1a anchor so the
+            // 24 h toggle doesn't erase a Day 1a event pulled weeks ago.
+            const originalEvents = originalSubjectMap.get(subject.subject_id)?.redcap_events ?? subject.redcap_events;
+            const day1aDate = findSubjectDay1aDate(originalEvents);
             const points: TimelinePoint[] = [];
             for (const day of subject.days) {
                 if (!day1aDate) continue;
@@ -249,7 +274,7 @@ export default function DayTrackerPage() {
             map.set(subject.subject_id, { day1aDate, points });
         }
         return map;
-    }, [filteredSubjects]);
+    }, [filteredSubjects, originalSubjectMap]);
 
     // ── Calendar timeline: day offset range ──────────────────────────────────
     const dayOffsetRange = React.useMemo(() => {
@@ -326,6 +351,21 @@ export default function DayTrackerPage() {
                         <RefreshCcw className="h-4 w-4" />
                         Load
                     </Button>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                    <Switch
+                        id="dt-last24h"
+                        checked={showLast24h}
+                        onCheckedChange={setShowLast24h}
+                    />
+                    <label htmlFor="dt-last24h" className="text-sm font-medium cursor-pointer select-none">
+                        Last 24 hours only
+                    </label>
+                    {showLast24h && (
+                        <span className="text-xs text-muted-foreground">
+                            — data pulled on or after {new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </span>
+                    )}
                 </div>
             </div>
 
@@ -610,7 +650,7 @@ export default function DayTrackerPage() {
                                                             No Day 1a (Pre-dose) event found — timeline unavailable
                                                         </span>
                                                     ) : visibleDays.length === 0 ? (
-                                                        <span className="text-xs text-muted-foreground">No non-REDCap activity recorded</span>
+                                                        <span className="text-xs text-muted-foreground">{showLast24h ? "No data in the last 24 hours" : "No non-REDCap activity recorded"}</span>
                                                     ) : (
                                                         <div className="relative h-8 w-full">
                                                             <div className="absolute inset-0 rounded bg-muted/30" />
