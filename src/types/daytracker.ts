@@ -34,6 +34,8 @@ export type DayTrackerSubject = {
     subject_id: string;
     site_id: string;
     consent_date: string | null;
+    /** True when subject has a recorded consent date; false means unconfirmed/possibly withdrawn */
+    is_consented: boolean;
     /** Calendar-offset activity for non-REDCap modalities */
     days: DayTrackerActivityRow[];
     /** REDCap event-based activity */

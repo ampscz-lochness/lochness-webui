@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: [
     process.env.HOSTNAME ? `${process.env.HOSTNAME}` : `${process.env.NEXT_PUBLIC_HOSTNAME}`,
   ],
+  serverExternalPackages: ["better-auth", "kysely", "@simplewebauthn/server"],
   publicRuntimeConfig: {
     version: packageJson.version,
   },

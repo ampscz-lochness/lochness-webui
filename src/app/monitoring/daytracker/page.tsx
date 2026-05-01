@@ -163,6 +163,7 @@ export default function DayTrackerPage() {
     const [activeTab, setActiveTab] = React.useState<"redcap" | "timeline">("redcap");
     const [activeModalityTab, setActiveModalityTab] = React.useState<string>("all");
     const [showLast24h, setShowLast24h] = React.useState(false);
+    const [expandedSubjectId, setExpandedSubjectId] = React.useState<string | null>(null);
     const [hoverTooltip, setHoverTooltip] = React.useState<HoverTooltipState | null>(null);
 
     const showTooltip = React.useCallback((event: React.MouseEvent<HTMLElement>, lines: string[]) => {
@@ -206,7 +207,8 @@ export default function DayTrackerPage() {
     // ── Filtered subjects ─────────────────────────────────────────────────────
     const filteredSubjects = React.useMemo(() => {
         const norm = subjectFilter.trim().toLowerCase();
-        let all = data?.activity_by_subject ?? [];
+        // Only show subjects with a confirmed consent date
+        let all = (data?.activity_by_subject ?? []).filter((s) => s.is_consented);
         if (norm) {
             all = all.filter((s) => s.subject_id.toLowerCase().includes(norm));
         }
@@ -285,18 +287,31 @@ export default function DayTrackerPage() {
                 if (d.day_offset_from_day1a < min) min = d.day_offset_from_day1a;
                 if (d.day_offset_from_day1a > max) max = d.day_offset_from_day1a;
             }
+            // Also include consent date offset so it's never clipped off-screen
+            const originalSubject = originalSubjectMap.get(subject.subject_id);
+            if (timeline?.day1aDate && originalSubject?.consent_date) {
+                const consentOffset = diffDays(originalSubject.consent_date, timeline.day1aDate);
+                if (consentOffset !== null) {
+                    if (consentOffset < min) min = consentOffset;
+                    if (consentOffset > max) max = consentOffset;
+                }
+            }
         }
         return { min, max };
-    }, [filteredSubjects, timelineBySubject]);
+    }, [filteredSubjects, timelineBySubject, originalSubjectMap]);
 
-    const rangeSpan = Math.max(1, dayOffsetRange.max - dayOffsetRange.min);
+    // Add padding so lines near the edges stay visible
+    const RANGE_PADDING = 5;
+    const paddedMin = dayOffsetRange.min - RANGE_PADDING;
+    const paddedMax = dayOffsetRange.max + RANGE_PADDING;
+    const rangeSpan = Math.max(1, paddedMax - paddedMin);
     const toXPercent = React.useCallback(
-        (offset: number) => ((offset - dayOffsetRange.min) / rangeSpan) * 100,
-        [dayOffsetRange, rangeSpan]
+        (offset: number) => ((offset - paddedMin) / rangeSpan) * 100,
+        [paddedMin, rangeSpan]
     );
     const AXIS_TICKS = [-30, 0, 30, 60, 90, 180, 365];
     const visibleTicks = AXIS_TICKS.filter(
-        (t) => t >= dayOffsetRange.min - 5 && t <= dayOffsetRange.max + 5
+        (t) => t >= paddedMin && t <= paddedMax
     );
 
     const maxBucketTotal = React.useMemo(() => {
@@ -446,16 +461,39 @@ export default function DayTrackerPage() {
                                         </thead>
                                         <tbody>
                                             {filteredSubjects.map((subject) => {
+                                                if (showLast24h && subject.redcap_events.length === 0) return null;
                                                 const grid = buildEventGrid(subject.redcap_events, data.redcap_event_order);
                                                 const latestEventName = findLatestEventName(
                                                     subject.redcap_events,
                                                     data.redcap_event_order
                                                 );
+                                                const isExpanded = expandedSubjectId === subject.subject_id;
+                                                const colSpan = data.redcap_event_order.length + 1;
                                                 return (
-                                                    <tr key={subject.subject_id} className="hover:bg-muted/40">
+                                                    <React.Fragment key={subject.subject_id}>
+                                                    <tr
+                                                        className={`cursor-pointer hover:bg-muted/40 ${isExpanded ? "bg-muted/30" : ""}`}
+                                                        onClick={() => setExpandedSubjectId(isExpanded ? null : subject.subject_id)}
+                                                    >
                                                         <td className="sticky left-0 z-10 border border-border bg-card px-2 py-1.5">
-                                                            <span className="font-medium">{subject.subject_id}</span>
-                                                            <span className="block text-[10px] text-muted-foreground">{subject.site_id}</span>
+                                                            <span className="inline-flex items-center gap-1.5">
+                                                                <span className="font-medium">{subject.subject_id}</span>
+                                                                {subject.is_consented ? (
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented — consent date: ${asReadableDate(subject.consent_date)}`}>
+                                                                        ✓
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded — may be withdrawn or unenrolled">
+                                                                        !
+                                                                    </span>
+                                                                )}
+                                                                {!originalSubjectMap.get(subject.subject_id)?.redcap_events.some(e => /day_1a_predose/i.test(e.event_name)) && (
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white dark:bg-orange-600" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
+                                                                        –
+                                                                    </span>
+                                                                )}
+                                                            </span>
+                                                            <span className="block text-[9px] text-muted-foreground/50 select-none">{isExpanded ? "▲ collapse" : "▼ expand"}</span>
                                                         </td>
                                                         {data.redcap_event_order.map((ev) => {
                                                             const cell = grid.get(ev.event_name);
@@ -542,6 +580,50 @@ export default function DayTrackerPage() {
                                                             );
                                                         })}
                                                     </tr>
+                                                    {isExpanded && (
+                                                        <tr>
+                                                            <td colSpan={colSpan} className="border border-border bg-muted/20 p-3">
+                                                                <p className="text-xs font-semibold mb-2">
+                                                                    {subject.subject_id} — all pull records
+                                                                    {subject.consent_date && <span className="ml-2 font-normal text-muted-foreground">Consent: {asReadableDate(subject.consent_date)}</span>}
+                                                                </p>
+                                                                <div className="overflow-x-auto">
+                                                                    <table className="w-full border-collapse text-[11px]">
+                                                                        <thead>
+                                                                            <tr>
+                                                                                <th className="border border-border bg-muted px-2 py-1 text-left">Pull Date</th>
+                                                                                <th className="border border-border bg-muted px-2 py-1 text-left">Event</th>
+                                                                                <th className="border border-border bg-muted px-2 py-1 text-left">Type</th>
+                                                                                <th className="border border-border bg-muted px-2 py-1 text-left">Form</th>
+                                                                                <th className="border border-border bg-muted px-2 py-1 text-left">Field</th>
+                                                                                <th className="border border-border bg-muted px-2 py-1 text-left">File</th>
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {[...subject.redcap_events]
+                                                                                .sort((a, b) => a.pull_date.localeCompare(b.pull_date))
+                                                                                .map((rec, idx) => (
+                                                                                    <tr key={idx} className="hover:bg-muted/30">
+                                                                                        <td className="border border-border px-2 py-1 whitespace-nowrap">{asReadableDate(rec.pull_date)}</td>
+                                                                                        <td className="border border-border px-2 py-1 whitespace-nowrap">
+                                                                                            <span className="inline-block rounded px-1.5 py-0.5 text-white text-[10px] font-medium" style={{ backgroundColor: formColorMap.get(rec.form_name ?? "") ?? "#6366f1" }}>
+                                                                                                {rec.event_label}
+                                                                                            </span>
+                                                                                        </td>
+                                                                                        <td className="border border-border px-2 py-1 text-muted-foreground">{rec.record_type}</td>
+                                                                                        <td className="border border-border px-2 py-1">{rec.form_name ?? "—"}</td>
+                                                                                        <td className="border border-border px-2 py-1 font-mono text-[10px]">{rec.field_name ?? "—"}</td>
+                                                                                        <td className="border border-border px-2 py-1 max-w-[220px] truncate" title={rec.file_path ?? undefined}>{rec.file_path ? asFileName(rec.file_path) : "—"}</td>
+                                                                                    </tr>
+                                                                                ))
+                                                                            }
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    )}
+                                                    </React.Fragment>
                                                 );
                                             })}
                                         </tbody>
@@ -647,11 +729,35 @@ export default function DayTrackerPage() {
                                             const visibleDays = (timeline?.points ?? []).filter(
                                                 (d) => activeModalityTab === "all" || d.modality_key === activeModalityTab
                                             );
+                                            if (showLast24h && visibleDays.length === 0) return null;
+
+                                            const isExpanded = expandedSubjectId === subject.subject_id;
 
                                             return (
-                                                <div key={subject.subject_id} className="border rounded-md p-3">
-                                                    <span className="text-sm font-semibold">{subject.subject_id}</span>
-                                                    <span className="ml-2 text-xs text-muted-foreground">{subject.site_id}</span>
+                                                <div
+                                                    key={subject.subject_id}
+                                                    className={`border rounded-md p-3 cursor-pointer transition-colors ${isExpanded ? "border-primary/40 bg-muted/20" : "hover:border-border/80"}`}
+                                                    onClick={() => setExpandedSubjectId(isExpanded ? null : subject.subject_id)}
+                                                >
+                                                    <div className="flex items-center gap-2 mb-0.5">
+                                                        <span className="text-sm font-semibold">{subject.subject_id}</span>
+                                                        <span className="text-xs text-muted-foreground">{subject.site_id}</span>
+                                                        {subject.is_consented ? (
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented — consent date: ${asReadableDate(subject.consent_date)}`}>
+                                                                ✓
+                                                            </span>
+                                                        ) : (
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded — may be withdrawn or unenrolled">
+                                                                !
+                                                            </span>
+                                                        )}
+                                                        {!timeline?.day1aDate && (
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white dark:bg-orange-600" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
+                                                                –
+                                                            </span>
+                                                        )}
+                                                        <span className="ml-auto text-[9px] text-muted-foreground/50 select-none">{isExpanded ? "▲ collapse" : "▼ expand"}</span>
+                                                    </div>
                                                     <p className="text-xs text-muted-foreground mt-0.5 mb-2">
                                                         Day 1a (Pre-dose): {asReadableDate(timeline?.day1aDate)}
                                                     </p>
@@ -663,15 +769,53 @@ export default function DayTrackerPage() {
                                                     ) : visibleDays.length === 0 ? (
                                                         <span className="text-xs text-muted-foreground">{showLast24h ? "No data in the last 24 hours" : "No non-REDCap activity recorded"}</span>
                                                     ) : (
-                                                        <div className="relative h-8 w-full">
+                                                        <div className={`relative w-full ${isExpanded ? "h-20" : "h-8"}`}>
                                                             <div className="absolute inset-0 rounded bg-muted/30" />
-                                                            {dayOffsetRange.min <= 0 && dayOffsetRange.max >= 0 && (
-                                                                <div
-                                                                    className="absolute top-0 bottom-0 w-px bg-sky-400/70 z-10"
-                                                                    style={{ left: `${toXPercent(0)}%` }}
-                                                                    title="Day 1a (Pre-dose) (Day 0)"
-                                                                />
-                                                            )}
+                                                            {/* Vertical reference lines: Day 1a (red dashed) and consent date (green dashed) */}
+                                                            {(() => {
+                                                                const consentDate = originalSubjectMap.get(subject.subject_id)?.consent_date ?? subject.consent_date;
+                                                                const consentOffset = (timeline?.day1aDate && consentDate)
+                                                                    ? diffDays(consentDate, timeline.day1aDate) : null;
+                                                                const xDay1a = toXPercent(0);
+                                                                const xConsent = consentOffset !== null ? toXPercent(consentOffset) : null;
+                                                                // Detect overlap: within 2% of range
+                                                                const overlapping = xConsent !== null && Math.abs(xConsent - xDay1a) < 2;
+                                                                const day1aLines = [(
+                                                                    <div
+                                                                        key="day1a"
+                                                                        className="absolute top-0 bottom-0 z-10 cursor-default"
+                                                                        style={{
+                                                                            left: `${xDay1a + (overlapping ? 1.5 : 0)}%`,
+                                                                            width: "1px",
+                                                                            background: "repeating-linear-gradient(to bottom, rgba(239,68,68,0.7) 0px, rgba(239,68,68,0.7) 4px, transparent 4px, transparent 8px)",
+                                                                        }}
+                                                                        onMouseEnter={(e) => showTooltip(e, ["Day 1a (Pre-dose)", "Day 0 anchor"])}
+                                                                        onMouseMove={(e) => showTooltip(e, ["Day 1a (Pre-dose)", "Day 0 anchor"])}
+                                                                        onMouseLeave={hideTooltip}
+                                                                    />
+                                                                )];
+                                                                const consentLine = (xConsent !== null && consentDate) ? (
+                                                                    <div
+                                                                        key="consent"
+                                                                        className="absolute top-0 bottom-0 z-20 cursor-default"
+                                                                        style={{
+                                                                            left: `${xConsent - (overlapping ? 1.5 : 0)}%`,
+                                                                            width: "1px",
+                                                                            background: "repeating-linear-gradient(to bottom, rgba(34,197,94,0.75) 0px, rgba(34,197,94,0.75) 4px, transparent 4px, transparent 8px)",
+                                                                        }}
+                                                                        onMouseEnter={(e) => showTooltip(e, [
+                                                                            `Consent date: ${asReadableDate(consentDate)}`,
+                                                                            `Day ${consentOffset! >= 0 ? "+" : ""}${consentOffset} from Day 1a`,
+                                                                        ])}
+                                                                        onMouseMove={(e) => showTooltip(e, [
+                                                                            `Consent date: ${asReadableDate(consentDate)}`,
+                                                                            `Day ${consentOffset! >= 0 ? "+" : ""}${consentOffset} from Day 1a`,
+                                                                        ])}
+                                                                        onMouseLeave={hideTooltip}
+                                                                    />
+                                                                ) : null;
+                                                                return <>{day1aLines}{consentLine}</>;
+                                                            })()}
                                                             {visibleDays.map((day) => {
                                                                 const xLeft = toXPercent(day.day_offset_from_day1a);
                                                                 const barW = Math.max(0.5, (1 / rangeSpan) * 100);
@@ -689,12 +833,48 @@ export default function DayTrackerPage() {
                                                                         className="absolute bottom-0 overflow-hidden rounded-sm"
                                                                         style={{ left: `${xLeft}%`, width: `${barW}%`, height: `${hPct}%`, minWidth: "3px", backgroundColor: color }}
                                                                         title={tip}
-                                                                        onMouseEnter={(e) => showTooltip(e, tipLines)}
-                                                                        onMouseMove={(e) => showTooltip(e, tipLines)}
+                                                                        onMouseEnter={(e) => { e.stopPropagation(); showTooltip(e, tipLines); }}
+                                                                        onMouseMove={(e) => { e.stopPropagation(); showTooltip(e, tipLines); }}
                                                                         onMouseLeave={hideTooltip}
+                                                                        onClick={(e) => e.stopPropagation()}
                                                                     />
                                                                 );
                                                             })}
+                                                        </div>
+                                                    )}
+                                                    {/* Expanded detail: sorted file listing */}
+                                                    {isExpanded && visibleDays.length > 0 && (
+                                                        <div className="mt-3 overflow-x-auto" onClick={(e) => e.stopPropagation()}>
+                                                            <table className="w-full border-collapse text-[11px]">
+                                                                <thead>
+                                                                    <tr>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Date</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Day from 1a</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Modality</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Files</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Sample file</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    {[...visibleDays]
+                                                                        .sort((a, b) => a.day_offset_from_day1a - b.day_offset_from_day1a)
+                                                                        .map((day, idx) => (
+                                                                            <tr key={idx} className="hover:bg-muted/30">
+                                                                                <td className="border border-border px-2 py-1 whitespace-nowrap">{asReadableDate(day.calendar_date)}</td>
+                                                                                <td className="border border-border px-2 py-1 whitespace-nowrap">{day.day_offset_from_day1a >= 0 ? "+" : ""}{day.day_offset_from_day1a}</td>
+                                                                                <td className="border border-border px-2 py-1">
+                                                                                    <span className="inline-flex items-center gap-1">
+                                                                                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: MODALITY_COLOR_BY_KEY[day.modality_key as CoverageModalityKey] ?? "#aaa" }} />
+                                                                                        {day.modality_key}
+                                                                                    </span>
+                                                                                </td>
+                                                                                <td className="border border-border px-2 py-1">{day.unique_file_count}</td>
+                                                                                <td className="border border-border px-2 py-1 max-w-[220px] truncate text-muted-foreground" title={day.file_paths[0]}>{day.file_paths[0] ? asFileName(day.file_paths[0]) : "—"}</td>
+                                                                            </tr>
+                                                                        ))
+                                                                    }
+                                                                </tbody>
+                                                            </table>
                                                         </div>
                                                     )}
                                                 </div>

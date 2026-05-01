@@ -7,6 +7,7 @@ type ConsentSubjectRow = {
     subject_id: string;
     site_id: string;
     consent_date: string | null;
+    is_consented: boolean;
 };
 
 type DayActivityRow = {
@@ -183,15 +184,16 @@ export class DayTracker {
         const pullFilePathColumn = pickFirstColumn(dataPullColumns, ["file_path", "filepath", "path"]);
         const hasFileMd5Column = dataPullColumns.has("file_md5");
 
-        // 1. Get all subjects for this project (those with consent_date preferred; fallback to all consented)
+        // 1. Get all subjects for this project — include those with and without consent_date.
+        // Subjects missing consent_date are flagged is_consented=false (possibly withdrawn/unenrolled).
         const consentSubjectsQuery = `
             SELECT
                 subject_id,
                 site_id,
-                NULLIF(subject_metadata->>'consent_date', '')::text AS consent_date
+                NULLIF(subject_metadata->>'consent_date', '')::text AS consent_date,
+                (COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = '') AS is_consented
             FROM public.subjects
             WHERE project_id = $1
-              AND COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = ''
             ORDER BY site_id, subject_id
         `;
 
@@ -213,6 +215,7 @@ export class DayTracker {
                 subject_id: r.subject_id,
                 site_id: r.site_id,
                 consent_date: r.consent_date,
+                is_consented: r.is_consented,
                 days: [],
                 redcap_events: [],
             })),
@@ -433,6 +436,7 @@ export class DayTracker {
             subject_id: row.subject_id,
             site_id: siteBySubject.get(row.subject_id) ?? row.site_id,
             consent_date: consentDateBySubject.get(row.subject_id) ?? null,
+            is_consented: row.is_consented,
             days: daysBySubject.get(row.subject_id) ?? [],
             redcap_events: redcapEventsBySubject.get(row.subject_id) ?? [],
         }));
