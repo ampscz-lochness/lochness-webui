@@ -1,4 +1,5 @@
 import { getConnection } from "@/lib/db";
+import { getStatusFlagsBySubject } from "@/lib/models/forms-status";
 import type { DayTrackerPayload, DayTrackerSubject, RedcapEventRecord } from "@/types/daytracker";
 
 type TableName = "subjects" | "data_pulls" | "data_pull";
@@ -201,6 +202,18 @@ export class DayTracker {
         const consentSubjects = consentResult.rows as ConsentSubjectRow[];
         const subjectIds = consentSubjects.map((r) => r.subject_id);
 
+        let statusFlagsBySubject = new Map<string, {
+            is_screen_failed: boolean;
+            is_withdrawn: boolean;
+            screen_fail_reason: string | null;
+            screen_fail_comments: string | null;
+        }>();
+        try {
+            statusFlagsBySubject = await getStatusFlagsBySubject(projectId, subjectIds);
+        } catch {
+            // formsdb is intentionally isolated; keep Day Tracker functional if it is unavailable
+        }
+
         const consentDateBySubject = new Map(
             consentSubjects.map((r) => [r.subject_id, r.consent_date])
         );
@@ -216,6 +229,10 @@ export class DayTracker {
                 site_id: r.site_id,
                 consent_date: r.consent_date,
                 is_consented: r.is_consented,
+                is_screen_failed: statusFlagsBySubject.get(r.subject_id)?.is_screen_failed ?? false,
+                is_withdrawn: statusFlagsBySubject.get(r.subject_id)?.is_withdrawn ?? false,
+                screen_fail_reason: statusFlagsBySubject.get(r.subject_id)?.screen_fail_reason ?? null,
+                screen_fail_comments: statusFlagsBySubject.get(r.subject_id)?.screen_fail_comments ?? null,
                 days: [],
                 redcap_events: [],
             })),
@@ -437,6 +454,10 @@ export class DayTracker {
             site_id: siteBySubject.get(row.subject_id) ?? row.site_id,
             consent_date: consentDateBySubject.get(row.subject_id) ?? null,
             is_consented: row.is_consented,
+            is_screen_failed: statusFlagsBySubject.get(row.subject_id)?.is_screen_failed ?? false,
+            is_withdrawn: statusFlagsBySubject.get(row.subject_id)?.is_withdrawn ?? false,
+            screen_fail_reason: statusFlagsBySubject.get(row.subject_id)?.screen_fail_reason ?? null,
+            screen_fail_comments: statusFlagsBySubject.get(row.subject_id)?.screen_fail_comments ?? null,
             days: daysBySubject.get(row.subject_id) ?? [],
             redcap_events: redcapEventsBySubject.get(row.subject_id) ?? [],
         }));

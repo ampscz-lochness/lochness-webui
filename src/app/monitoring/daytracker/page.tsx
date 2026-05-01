@@ -479,15 +479,25 @@ export default function DayTrackerPage() {
                                                             <span className="inline-flex items-center gap-1.5">
                                                                 <span className="font-medium">{subject.subject_id}</span>
                                                                 {subject.is_consented ? (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented — consent date: ${asReadableDate(subject.consent_date)}`}>
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
                                                                         ✓
                                                                     </span>
                                                                 ) : (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded — may be withdrawn or unenrolled">
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
                                                                         !
                                                                     </span>
                                                                 )}
-                                                                {!originalSubjectMap.get(subject.subject_id)?.redcap_events.some(e => /day_1a_predose/i.test(e.event_name)) && (
+                                                                {subject.is_withdrawn && (
+                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
+                                                                        W
+                                                                    </span>
+                                                                )}
+                                                                {subject.is_screen_failed && (
+                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={`Screen failed\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_screenfail'${subject.screen_fail_reason ? `\nReason field: chrstatus_screenfail_reason=${subject.screen_fail_reason}` : ""}${subject.screen_fail_comments ? `\nComments field: chrstatus_sf_comments=${subject.screen_fail_comments}` : ""}`}>
+                                                                        SF
+                                                                    </span>
+                                                                )}
+                                                                {!subject.is_screen_failed && !originalSubjectMap.get(subject.subject_id)?.redcap_events.some(e => /day_1a_predose/i.test(e.event_name)) && (
                                                                     <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white dark:bg-orange-600" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
                                                                         –
                                                                     </span>
@@ -743,15 +753,25 @@ export default function DayTrackerPage() {
                                                         <span className="text-sm font-semibold">{subject.subject_id}</span>
                                                         <span className="text-xs text-muted-foreground">{subject.site_id}</span>
                                                         {subject.is_consented ? (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented — consent date: ${asReadableDate(subject.consent_date)}`}>
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
                                                                 ✓
                                                             </span>
                                                         ) : (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded — may be withdrawn or unenrolled">
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
                                                                 !
                                                             </span>
                                                         )}
-                                                        {!timeline?.day1aDate && (
+                                                        {subject.is_withdrawn && (
+                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
+                                                                W
+                                                            </span>
+                                                        )}
+                                                        {subject.is_screen_failed && (
+                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={`Screen failed\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_screenfail'${subject.screen_fail_reason ? `\nReason field: chrstatus_screenfail_reason=${subject.screen_fail_reason}` : ""}${subject.screen_fail_comments ? `\nComments field: chrstatus_sf_comments=${subject.screen_fail_comments}` : ""}`}>
+                                                                SF
+                                                            </span>
+                                                        )}
+                                                        {!subject.is_screen_failed && !timeline?.day1aDate && (
                                                             <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white dark:bg-orange-600" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
                                                                 –
                                                             </span>

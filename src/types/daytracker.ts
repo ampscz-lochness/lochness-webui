@@ -36,6 +36,14 @@ export type DayTrackerSubject = {
     consent_date: string | null;
     /** True when subject has a recorded consent date; false means unconfirmed/possibly withdrawn */
     is_consented: boolean;
+    /** status_form.chrstatus_screenfail == 1 */
+    is_screen_failed: boolean;
+    /** status_form.chrstatus_withdrawal == 1 */
+    is_withdrawn: boolean;
+    /** status_form screen-fail reason code (e.g. "1", "3") */
+    screen_fail_reason: string | null;
+    /** status_form free-text comments for screen failure */
+    screen_fail_comments: string | null;
     /** Calendar-offset activity for non-REDCap modalities */
     days: DayTrackerActivityRow[];
     /** REDCap event-based activity */
