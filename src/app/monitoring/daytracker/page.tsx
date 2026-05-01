@@ -78,6 +78,12 @@ type TimelinePoint = {
     file_paths: string[];
 };
 
+type HoverTooltipState = {
+    x: number;
+    y: number;
+    lines: string[];
+};
+
 const parseDateToUtcMillis = (value: string | null | undefined): number | null => {
     if (!value) return null;
     const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -155,6 +161,19 @@ export default function DayTrackerPage() {
     const [loading, setLoading] = React.useState(true);
     const [activeTab, setActiveTab] = React.useState<"redcap" | "timeline">("redcap");
     const [activeModalityTab, setActiveModalityTab] = React.useState<string>("all");
+    const [hoverTooltip, setHoverTooltip] = React.useState<HoverTooltipState | null>(null);
+
+    const showTooltip = React.useCallback((event: React.MouseEvent<HTMLElement>, lines: string[]) => {
+        const maxX = typeof window !== "undefined" ? window.innerWidth - 340 : event.clientX + 12;
+        const maxY = typeof window !== "undefined" ? window.innerHeight - 140 : event.clientY + 12;
+        const x = Math.max(8, Math.min(event.clientX + 12, maxX));
+        const y = Math.max(8, Math.min(event.clientY + 12, maxY));
+        setHoverTooltip({ x, y, lines });
+    }, []);
+
+    const hideTooltip = React.useCallback(() => {
+        setHoverTooltip(null);
+    }, []);
 
     const fetchData = React.useCallback(async (pid: string) => {
         setLoading(true);
@@ -437,6 +456,9 @@ export default function DayTrackerPage() {
                                                                     key={ev.event_name}
                                                                     className={`border border-border px-1 py-1 ${isLatestCell ? "bg-amber-50/70 ring-1 ring-inset ring-amber-300" : ""}`}
                                                                     title={tooltipLines.join("\n")}
+                                                                    onMouseEnter={(e) => showTooltip(e, tooltipLines)}
+                                                                    onMouseMove={(e) => showTooltip(e, tooltipLines)}
+                                                                    onMouseLeave={hideTooltip}
                                                                 >
                                                                     <div className="flex flex-wrap gap-0.5 justify-center items-center">
                                                                         {isLatestCell && (
@@ -604,17 +626,21 @@ export default function DayTrackerPage() {
                                                                 const barW = Math.max(0.5, (1 / rangeSpan) * 100);
                                                                 const hPct = Math.max(20, (day.unique_file_count / maxBucketTotal) * 100);
                                                                 const color = MODALITY_COLOR_BY_KEY[day.modality_key as CoverageModalityKey] ?? "#10b981";
-                                                                const tip = [
+                                                                const tipLines = [
                                                                     `Day ${day.day_offset_from_day1a >= 0 ? "+" : ""}${day.day_offset_from_day1a} (${asReadableDate(day.calendar_date)})`,
                                                                     `${day.modality_key}: ${day.unique_file_count} file${day.unique_file_count === 1 ? "" : "s"}`,
                                                                     ...(day.file_paths.length > 0 ? ["", ...day.file_paths.slice(0, 3).map(asFileName)] : []),
-                                                                ].join("\n");
+                                                                ];
+                                                                const tip = tipLines.join("\n");
                                                                 return (
                                                                     <div
                                                                         key={`${day.modality_key}-${day.day_offset_from_day1a}`}
                                                                         className="absolute bottom-0 overflow-hidden rounded-sm"
                                                                         style={{ left: `${xLeft}%`, width: `${barW}%`, height: `${hPct}%`, minWidth: "3px", backgroundColor: color }}
                                                                         title={tip}
+                                                                        onMouseEnter={(e) => showTooltip(e, tipLines)}
+                                                                        onMouseMove={(e) => showTooltip(e, tipLines)}
+                                                                        onMouseLeave={hideTooltip}
                                                                     />
                                                                 );
                                                             })}
@@ -664,6 +690,21 @@ export default function DayTrackerPage() {
                         </section>
                     )}
                 </>
+            )}
+
+            {hoverTooltip && (
+                <div
+                    className="pointer-events-none fixed z-50 max-w-[320px] rounded-md border border-border bg-background/95 px-2.5 py-2 text-[11px] shadow-lg"
+                    style={{ left: `${hoverTooltip.x}px`, top: `${hoverTooltip.y}px` }}
+                >
+                    {hoverTooltip.lines.map((line, idx) => (
+                        line.trim() === "" ? (
+                            <div key={idx} className="h-1" />
+                        ) : (
+                            <div key={idx} className="leading-snug text-foreground/90">{line}</div>
+                        )
+                    ))}
+                </div>
             )}
         </div>
     );
