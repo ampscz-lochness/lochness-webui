@@ -35,6 +35,17 @@ export default function Home() {
                             </p>
                         </div>
                     </Link>
+
+                    <Link href="/monitoring/daytracker" color="inherit" className="md:col-span-2">
+                        <div className="border border-l-4 border-l-emerald-500 rounded-lg p-4 hover:shadow-md transition-shadow bg-emerald-50/40 dark:bg-slate-700/50 dark:border-emerald-500">
+                            <h3 className="text-xl mb-2 font-bold text-gray-700 dark:text-gray-300">
+                                🗓️ Day Tracker
+                            </h3>
+                            <p className="text-base">
+                                Review subject-level REDCap study events and modality timelines, including consent, screen-failure, and withdrawal status indicators.
+                            </p>
+                        </div>
+                    </Link>
                 </div>
 
                 <p className="text-base mt-4">

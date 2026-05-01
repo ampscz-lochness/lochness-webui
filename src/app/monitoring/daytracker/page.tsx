@@ -38,6 +38,73 @@ const FORM_COLORS = [
     "#ec4899", "#14b8a6", "#84cc16", "#8b5cf6", "#ef4444",
 ];
 
+const SCREEN_FAIL_REASON_LABELS: Record<string, string> = {
+    "1": "Does not meet inclusion / meets exclusion criteria",
+    "2": "Moved out of area",
+    "3": "No response to outreach attempts / unable to locate",
+    "4": "Administrative constraints",
+    "5": "Incarceration",
+    "6": "Long-term hospitalization",
+    "7": "Subject formally withdrew",
+    "8": "Medical event precluded participation",
+    "9": "Death",
+    "10": "Other",
+};
+
+const getScreenFailBadge = (reasonCode: string | null, comments: string | null) => {
+    const trimmed = (reasonCode ?? "").trim();
+    const label = SCREEN_FAIL_REASON_LABELS[trimmed] ?? null;
+    const badgeText = trimmed || "SF";
+    const reasonLine = trimmed
+        ? `Reason field: chrstatus_screenfail_reason=${trimmed}${label ? ` (${label})` : ""}`
+        : "Reason field: chrstatus_screenfail_reason not set";
+    const commentsLine = comments
+        ? `\nComments field: chrstatus_sf_comments=${comments}`
+        : "";
+    return {
+        badgeText,
+        title: `Screen failed\nMeaning: Subject did not progress to active study participation and was marked as a screening failure.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_screenfail'\n${reasonLine}${commentsLine}`,
+    };
+};
+
+const getExpandedStatusSummary = (
+    subject: DayTrackerPayload["activity_by_subject"][number],
+    hasDay1aEvent: boolean
+) => {
+    const reasonCode = (subject.screen_fail_reason ?? "").trim();
+    const reasonLabel = reasonCode ? SCREEN_FAIL_REASON_LABELS[reasonCode] ?? "Unknown reason" : null;
+
+    if (subject.is_screen_failed) {
+        return {
+            chipClass: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
+            chipText: `Screen Failed${reasonCode ? ` (${reasonCode})` : ""}`,
+            message: reasonLabel
+                ? `Primary reason: ${reasonLabel}`
+                : "Primary reason was not provided in status_form.",
+            extra: subject.screen_fail_comments ?? null,
+            noDay1a: !hasDay1aEvent,
+        };
+    }
+
+    if (subject.is_withdrawn) {
+        return {
+            chipClass: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+            chipText: "Early Withdrawal",
+            message: "Subject withdrew after enrollment before completing the full protocol.",
+            extra: null,
+            noDay1a: !hasDay1aEvent,
+        };
+    }
+
+    return {
+        chipClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+        chipText: "Active / In Follow-up",
+        message: "No screen-failure or early-withdrawal status is currently recorded.",
+        extra: null,
+        noDay1a: !hasDay1aEvent,
+    };
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const asReadableDate = (value: string | null | undefined): string => {
@@ -467,6 +534,11 @@ export default function DayTrackerPage() {
                                                     subject.redcap_events,
                                                     data.redcap_event_order
                                                 );
+                                                const screenFailBadge = getScreenFailBadge(subject.screen_fail_reason, subject.screen_fail_comments);
+                                                const hasDay1aEvent = Boolean(
+                                                    originalSubjectMap.get(subject.subject_id)?.redcap_events.some((e) => /day_1a_predose/i.test(e.event_name))
+                                                );
+                                                const statusSummary = getExpandedStatusSummary(subject, hasDay1aEvent);
                                                 const isExpanded = expandedSubjectId === subject.subject_id;
                                                 const colSpan = data.redcap_event_order.length + 1;
                                                 return (
@@ -479,27 +551,27 @@ export default function DayTrackerPage() {
                                                             <span className="inline-flex items-center gap-1.5">
                                                                 <span className="font-medium">{subject.subject_id}</span>
                                                                 {subject.is_consented ? (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nMeaning: Consent date is recorded and subject is eligible for Day Tracker display.\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
                                                                         ✓
                                                                     </span>
                                                                 ) : (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nMeaning: Subject is tracked in source data but consent is missing or incomplete.\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
                                                                         !
                                                                     </span>
                                                                 )}
                                                                 {subject.is_withdrawn && (
-                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
+                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nMeaning: Subject entered study but exited before completing protocol follow-up.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
                                                                         W
                                                                     </span>
                                                                 )}
                                                                 {subject.is_screen_failed && (
-                                                                    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={`Screen failed\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_screenfail'${subject.screen_fail_reason ? `\nReason field: chrstatus_screenfail_reason=${subject.screen_fail_reason}` : ""}${subject.screen_fail_comments ? `\nComments field: chrstatus_sf_comments=${subject.screen_fail_comments}` : ""}`}>
-                                                                        SF
+                                                                    <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={screenFailBadge.title}>
+                                                                        {screenFailBadge.badgeText}
                                                                     </span>
                                                                 )}
                                                                 {!subject.is_screen_failed && !originalSubjectMap.get(subject.subject_id)?.redcap_events.some(e => /day_1a_predose/i.test(e.event_name)) && (
-                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white dark:bg-orange-600" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
-                                                                        –
+                                                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-yellow-300 text-[9px] font-bold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
+                                                                        ?
                                                                     </span>
                                                                 )}
                                                             </span>
@@ -597,6 +669,26 @@ export default function DayTrackerPage() {
                                                                     {subject.subject_id} — all pull records
                                                                     {subject.consent_date && <span className="ml-2 font-normal text-muted-foreground">Consent: {asReadableDate(subject.consent_date)}</span>}
                                                                 </p>
+                                                                <div className="mb-3 rounded-md border border-border bg-background/70 p-2">
+                                                                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Subject Status</p>
+                                                                    {statusSummary.noDay1a && (
+                                                                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                            <span className="inline-flex rounded-full bg-yellow-300 px-2 py-0.5 text-[11px] font-semibold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950">
+                                                                                No Day 1a (Pre-dose) Event
+                                                                            </span>
+                                                                            <span className="text-xs text-foreground/90">No Day 1a anchor is recorded, so early study timepoint alignment may be incomplete.</span>
+                                                                        </div>
+                                                                    )}
+                                                                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusSummary.chipClass}`}>
+                                                                            {statusSummary.chipText}
+                                                                        </span>
+                                                                        <span className="text-xs text-foreground/90">{statusSummary.message}</span>
+                                                                    </div>
+                                                                    {statusSummary.extra && (
+                                                                        <p className="mt-1 text-xs text-muted-foreground">Details: {statusSummary.extra}</p>
+                                                                    )}
+                                                                </div>
                                                                 <div className="overflow-x-auto">
                                                                     <table className="w-full border-collapse text-[11px]">
                                                                         <thead>
@@ -741,6 +833,8 @@ export default function DayTrackerPage() {
                                             );
                                             if (showLast24h && visibleDays.length === 0) return null;
 
+                                            const screenFailBadge = getScreenFailBadge(subject.screen_fail_reason, subject.screen_fail_comments);
+                                            const statusSummary = getExpandedStatusSummary(subject, Boolean(timeline?.day1aDate));
                                             const isExpanded = expandedSubjectId === subject.subject_id;
 
                                             return (
@@ -753,27 +847,27 @@ export default function DayTrackerPage() {
                                                         <span className="text-sm font-semibold">{subject.subject_id}</span>
                                                         <span className="text-xs text-muted-foreground">{subject.site_id}</span>
                                                         {subject.is_consented ? (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[9px] font-bold text-white dark:bg-green-600" title={`Consented\nMeaning: Consent date is recorded and subject is eligible for Day Tracker display.\nSource: lochnessdb.subjects.subject_metadata->>'consent_date'\nValue: ${asReadableDate(subject.consent_date)}`}>
                                                                 ✓
                                                             </span>
                                                         ) : (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white dark:bg-amber-500" title="No consent date recorded\nMeaning: Subject is tracked in source data but consent is missing or incomplete.\nSource: lochnessdb.subjects.subject_metadata->>'missing_required_variables' / consent_date">
                                                                 !
                                                             </span>
                                                         )}
                                                         {subject.is_withdrawn && (
-                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
+                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[8px] font-bold text-white dark:bg-red-600" title="Early withdrawal\nMeaning: Subject entered study but exited before completing protocol follow-up.\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_withdrawal'">
                                                                 W
                                                             </span>
                                                         )}
                                                         {subject.is_screen_failed && (
-                                                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={`Screen failed\nSource: formsdb.forms.redcap_forms.form_data->>'chrstatus_screenfail'${subject.screen_fail_reason ? `\nReason field: chrstatus_screenfail_reason=${subject.screen_fail_reason}` : ""}${subject.screen_fail_comments ? `\nComments field: chrstatus_sf_comments=${subject.screen_fail_comments}` : ""}`}>
-                                                                SF
+                                                            <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[8px] font-bold text-white dark:bg-orange-700" title={screenFailBadge.title}>
+                                                                {screenFailBadge.badgeText}
                                                             </span>
                                                         )}
                                                         {!subject.is_screen_failed && !timeline?.day1aDate && (
-                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white dark:bg-orange-600" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
-                                                                –
+                                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-yellow-300 text-[9px] font-bold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950" title="No Day 1a (Pre-dose) event in REDCap — subject may not have started the treatment phase">
+                                                                ?
                                                             </span>
                                                         )}
                                                         <span className="ml-auto text-[9px] text-muted-foreground/50 select-none">{isExpanded ? "▲ collapse" : "▼ expand"}</span>
@@ -781,6 +875,29 @@ export default function DayTrackerPage() {
                                                     <p className="text-xs text-muted-foreground mt-0.5 mb-2">
                                                         Day 1a (Pre-dose): {asReadableDate(timeline?.day1aDate)}
                                                     </p>
+
+                                                    {isExpanded && (
+                                                        <div className="mb-2 rounded-md border border-border bg-background/70 p-2" onClick={(e) => e.stopPropagation()}>
+                                                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Subject Status</p>
+                                                            {statusSummary.noDay1a && (
+                                                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                    <span className="inline-flex rounded-full bg-yellow-300 px-2 py-0.5 text-[11px] font-semibold text-yellow-900 dark:bg-yellow-500 dark:text-yellow-950">
+                                                                        No Day 1a (Pre-dose) Event
+                                                                    </span>
+                                                                    <span className="text-xs text-foreground/90">No Day 1a anchor is recorded, so early study timepoint alignment may be incomplete.</span>
+                                                                </div>
+                                                            )}
+                                                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                                <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusSummary.chipClass}`}>
+                                                                    {statusSummary.chipText}
+                                                                </span>
+                                                                <span className="text-xs text-foreground/90">{statusSummary.message}</span>
+                                                            </div>
+                                                            {statusSummary.extra && (
+                                                                <p className="mt-1 text-xs text-muted-foreground">Details: {statusSummary.extra}</p>
+                                                            )}
+                                                        </div>
+                                                    )}
 
                                                     {!timeline?.day1aDate ? (
                                                         <span className="inline-flex items-center rounded-full border border-dashed border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
