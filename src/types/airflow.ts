@@ -43,3 +43,30 @@ export class AirflowModelError extends Error {
         this.name = "AirflowModelError";
     }
 }
+
+export type AirflowTaskState = "success" | "failed" | "running" | "queued" | "skipped" | "upstream_failed" | "restarting" | null;
+
+export type AirflowTaskInstance = {
+    task_id: string;
+    task_display_name: string;
+    state: AirflowTaskState;
+    start_date: string | null;
+    end_date: string | null;
+    duration: number | null;
+    try_number: number;
+    max_tries: number;
+    operator: string | null;
+    log_snippet: string[] | null; // last N log lines, only populated for failed tasks
+};
+
+export type AirflowRunDetail = {
+    dag_id: string;
+    dag_display_name: string;
+    dag_run_id: string;
+    run_type: string | null;
+    state: AirflowDagRunState;
+    start_date: string | null;
+    end_date: string | null;
+    duration_seconds: number | null;
+    task_instances: AirflowTaskInstance[];
+};

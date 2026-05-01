@@ -4,6 +4,9 @@ import {
     AirflowDagRunState,
     AirflowHealthPayload,
     AirflowModelError,
+    AirflowRunDetail,
+    AirflowTaskInstance,
+    AirflowTaskState,
 } from "@/types/airflow";
 
 const AIRFLOW_TIMEOUT_MS = 15_000;
@@ -187,6 +190,131 @@ export class Airflow {
             }
 
             throw new AirflowModelError("Unexpected error while querying Airflow", 500, {
+                message: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    static async getRunDetail(dagId: string, runId: string): Promise<AirflowRunDetail> {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), AIRFLOW_TIMEOUT_MS);
+
+        try {
+            const token = await getAirflowBearerToken(controller.signal);
+
+            // Fetch task instances for this run
+            const tiRes = await airflowFetch(
+                `/api/v2/dags/${encodeURIComponent(dagId)}/dagRuns/${encodeURIComponent(runId)}/taskInstances`,
+                token,
+                controller.signal
+            );
+
+            if (!tiRes.ok) {
+                throw new AirflowModelError("Failed to fetch task instances", 502, {
+                    airflow_status: tiRes.status,
+                });
+            }
+
+            type RawTaskInstance = {
+                task_id: string;
+                task_display_name: string;
+                state: string | null;
+                start_date: string | null;
+                end_date: string | null;
+                duration: number | null;
+                try_number: number;
+                max_tries: number;
+                operator_name: string | null;
+                dag_run_id: string;
+                dag_id: string;
+                dag_display_name: string;
+            };
+
+            type RawRunInfo = {
+                state: string;
+                run_type: string | null;
+                start_date: string | null;
+                end_date: string | null;
+                duration: number | null;
+                dag_display_name: string;
+            };
+
+            const tiJson = (await tiRes.json()) as { task_instances: RawTaskInstance[] };
+            const rawTasks = tiJson.task_instances ?? [];
+
+            // Also fetch the run-level metadata (state, duration, run_type)
+            const runRes = await airflowFetch(
+                `/api/v2/dags/${encodeURIComponent(dagId)}/dagRuns/${encodeURIComponent(runId)}`,
+                token,
+                controller.signal
+            );
+            const runInfo: RawRunInfo = runRes.ok
+                ? ((await runRes.json()) as RawRunInfo)
+                : { state: "unknown", run_type: null, start_date: null, end_date: null, duration: null, dag_display_name: dagId };
+
+            // For each failed task, fetch the last 30 log lines (try_number)
+            const taskInstances: AirflowTaskInstance[] = await Promise.all(
+                rawTasks.map(async (t): Promise<AirflowTaskInstance> => {
+                    let logSnippet: string[] | null = null;
+
+                    if (t.state === "failed" && t.try_number > 0) {
+                        try {
+                            const logRes = await airflowFetch(
+                                `/api/v2/dags/${encodeURIComponent(dagId)}/dagRuns/${encodeURIComponent(runId)}` +
+                                    `/taskInstances/${encodeURIComponent(t.task_id)}/logs/${t.try_number}`,
+                                token,
+                                controller.signal
+                            );
+                            if (logRes.ok) {
+                                const logJson = (await logRes.json()) as {
+                                    content?: Array<{ event?: string; timestamp?: string; level?: string }>;
+                                };
+                                const entries = (logJson.content ?? [])
+                                    .filter((e) => e.timestamp && e.event)
+                                    .map((e) => `[${e.level ?? "info"}] ${e.event ?? ""}`);
+                                logSnippet = entries.slice(-30);
+                            }
+                        } catch {
+                            // log fetch is best-effort
+                        }
+                    }
+
+                    return {
+                        task_id: t.task_id,
+                        task_display_name: t.task_display_name || t.task_id,
+                        state: (t.state as AirflowTaskState) ?? null,
+                        start_date: t.start_date ?? null,
+                        end_date: t.end_date ?? null,
+                        duration: t.duration ?? null,
+                        try_number: t.try_number,
+                        max_tries: t.max_tries,
+                        operator: t.operator_name ?? null,
+                        log_snippet: logSnippet,
+                    };
+                })
+            );
+
+            const firstTask = rawTasks[0];
+
+            return {
+                dag_id: dagId,
+                dag_display_name: runInfo.dag_display_name || firstTask?.dag_display_name || dagId,
+                dag_run_id: runId,
+                run_type: runInfo.run_type ?? null,
+                state: (runInfo.state as AirflowDagRunState) ?? "failed",
+                start_date: runInfo.start_date ?? null,
+                end_date: runInfo.end_date ?? null,
+                duration_seconds: runInfo.duration ?? null,
+                task_instances: taskInstances,
+            };
+        } catch (error) {
+            if (error instanceof AirflowModelError) throw error;
+            if (error instanceof Error && error.name === "AbortError") {
+                throw new AirflowModelError("Airflow request timed out", 504);
+            }
+            throw new AirflowModelError("Unexpected error fetching run detail", 500, {
                 message: error instanceof Error ? error.message : String(error),
             });
         } finally {
