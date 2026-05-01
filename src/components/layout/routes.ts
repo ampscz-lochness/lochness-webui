@@ -22,6 +22,11 @@ export const navData = {
                     url: "/monitoring/logs",
                     isActive: false,
                 },
+                {
+                    title: "Day Tracker",
+                    url: "/monitoring/daytracker",
+                    isActive: false,
+                },
             ],
         },
         {
