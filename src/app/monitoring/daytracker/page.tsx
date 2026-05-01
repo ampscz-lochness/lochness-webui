@@ -476,6 +476,17 @@ export default function DayTrackerPage() {
                                                                 `${ev.event_label}  (${subject.subject_id})`,
                                                                 `${cell.records.length} pull record${cell.records.length === 1 ? "" : "s"}`,
                                                             ];
+                                                            const pullDates = cell.records
+                                                                .map((r) => r.pull_date)
+                                                                .filter((v, i, a) => v && a.indexOf(v) === i)
+                                                                .sort();
+                                                            if (pullDates.length > 0) {
+                                                                tooltipLines.push(
+                                                                    pullDates.length === 1
+                                                                        ? `Pull date: ${asReadableDate(pullDates[0])}`
+                                                                        : `Pull dates: ${pullDates.map(asReadableDate).join(", ")}`
+                                                                );
+                                                            }
                                                             if (cell.forms.length > 0) {
                                                                 tooltipLines.push("", "Forms:");
                                                                 for (const form of cell.forms) {
