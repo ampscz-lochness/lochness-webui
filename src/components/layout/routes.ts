@@ -27,6 +27,11 @@ export const navData = {
                     url: "/monitoring/daytracker",
                     isActive: false,
                 },
+                {
+                    title: "SharePoint Tracker",
+                    url: "/monitoring/sharepoint",
+                    isActive: false,
+                },
             ],
         },
         {

@@ -25,6 +25,17 @@ export default function Home() {
                         </div>
                     </Link>
 
+                    <Link href="/monitoring/sharepoint">
+                        <div className="h-full border border-l-4 border-l-sky-500 rounded-lg p-4 hover:shadow-md transition-shadow bg-sky-50/40 dark:bg-slate-700/50 dark:border-sky-500">
+                            <h3 className="text-xl mb-2 font-bold text-gray-700 dark:text-gray-300">
+                                ☁️ SharePoint Tracker
+                            </h3>
+                            <p className="text-base">
+                                Track SharePoint JSON files, actual files, and REDCap run sheets across EEG, MindLAMP QC, and Transcript modalities per subject.
+                            </p>
+                        </div>
+                    </Link>
+
                     <Link href="/monitoring/logs">
                         <div className="h-full border border-l-4 border-l-teal-400 rounded-lg p-4 hover:shadow-md transition-shadow bg-teal-50/30 dark:bg-slate-700/50 dark:border-teal-500">
                             <h3 className="text-xl mb-2 font-bold text-gray-700 dark:text-gray-300">
