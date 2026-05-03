@@ -791,7 +791,7 @@ export default function SharePointTrackerPage() {
                                                                                                 <TooltipContent>
                                                                                                     <div className="max-w-xs text-xs">
                                                                                                         <p className="font-semibold mb-1">SharePoint Form Submission Date</p>
-                                                                                                        <p>Date from <code>response.submitted.json</code> (<code>sharepoint.sharepoint_forms.form_data-&gt;&gt;'event_date'</code>). Should match the run sheet Session Date.</p>
+                                                                                                        <p>Date from <code>response.submitted.json</code> (<code>sharepoint.sharepoint_forms.form_data-&gt;&gt;&apos;event_date&apos;</code>). Should match the run sheet Session Date.</p>
                                                                                                     </div>
                                                                                                 </TooltipContent>
                                                                                             </Tooltip>
@@ -1278,7 +1278,7 @@ export default function SharePointTrackerPage() {
                                                                                 <TooltipContent>
                                                                                     <div className="max-w-xs text-xs">
                                                                                         <p className="font-semibold mb-1">SharePoint Form Submission Date</p>
-                                                                                        <p>Date from <code>response.submitted.json</code> (<code>sharepoint.sharepoint_forms.form_data-&gt;&gt;'event_date'</code>). Should match the run sheet Session Date.</p>
+                                                                                        <p>Date from <code>response.submitted.json</code> (<code>sharepoint.sharepoint_forms.form_data-&gt;&gt;&apos;event_date&apos;</code>). Should match the run sheet Session Date.</p>
                                                                                     </div>
                                                                                 </TooltipContent>
                                                                             </Tooltip>

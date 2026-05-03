@@ -86,7 +86,7 @@ export default function ProjectForm({
             project_is_active: project?.project_is_active || undefined,
             project_description: project?.project_metadata?.description || undefined,
         });
-    }, [project])
+    }, [project, project_id, form])
 
     function handleFormSubmit(values: z.infer<typeof formSchema>) {
         const formData = {

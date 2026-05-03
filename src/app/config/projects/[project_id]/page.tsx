@@ -35,7 +35,7 @@ export default function ProjectPage({
             setProjectId(project_id);
         };
         getProjectId();
-    }, []);
+    }, [params]);
 
     React.useEffect(() => {
         const fetchProject = async () => {

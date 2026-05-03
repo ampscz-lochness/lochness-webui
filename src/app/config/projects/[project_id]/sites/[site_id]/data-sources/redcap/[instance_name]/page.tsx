@@ -86,7 +86,7 @@ export default function ShowRedcapDataSource({
         };
 
         fetchDataSource();
-    }, [projectId, siteId, instanceName]);
+    }, [projectId, siteId, instanceName, router, pathname]);
 
     return (
         <>

@@ -23,7 +23,7 @@ export default function EditProjectPage({
             setProjectId(project_id);
         };
         getProjectId();
-    }, []);
+    }, [params]);
 
     return (
         <div className="container mx-auto p-6 max-w-5xl flex flex-col h-full">
