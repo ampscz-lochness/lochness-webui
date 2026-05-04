@@ -1,6 +1,7 @@
 import { getConnection } from "@/lib/db";
 import { getFormsConnection } from "@/lib/formsdb";
 import { getStatusFlagsBySubject } from "@/lib/models/forms-status";
+import type { Pool } from "pg";
 import type {
     SharePointPayload,
     SharePointSubject,
@@ -309,20 +310,18 @@ export class SharePointTrackerModelError extends Error {
 export class SharePointTracker {
     static async getProjectSharePointTracker(projectId: string): Promise<SharePointPayload> {
         const connection = getConnection();
-        let formsConn: ReturnType<typeof getFormsConnection> | null = null;
-        let formsDbAvailable = false;
 
         // ── Phase 1: parallel setup (schema cache + formsdb probe + data_sources) ──
         const phase1 = await Promise.all([
             getCachedSchema(),
-            // formsdb probe — side-effect only, sets formsConn / formsDbAvailable
-            (async (): Promise<void> => {
+            // formsdb probe
+            (async (): Promise<Pool | null> => {
                 try {
-                    formsConn = getFormsConnection();
-                    await queryWithTimeout(formsConn.query("SELECT 1"), 1500);
-                    formsDbAvailable = true;
+                    const conn = getFormsConnection();
+                    await queryWithTimeout(conn.query("SELECT 1"), 1500);
+                    return conn;
                 } catch {
-                    formsDbAvailable = false;
+                    return null;
                 }
             })(),
             connection
@@ -337,6 +336,8 @@ export class SharePointTracker {
         ]);
 
         const { dataPullTable, subjectColumns, dataPullColumns } = phase1[0];
+            const formsConn = phase1[1] as Pool | null;
+            const formsDbAvailable = formsConn !== null;
         const jsonRequiredByModality: Record<string, boolean | null> = {
             eeg_sharepoint: null,
             mindlamp_qc_sharepoint: null,
@@ -569,6 +570,9 @@ export class SharePointTracker {
                GROUP BY dp.subject_id`
             : null;
 
+        const readyFormsConn: Pool | null =
+            formsDbAvailable && formsConn ? formsConn : null;
+
         // ── Phase 3: fire all independent queries in parallel ─────────────────
         const [activitySettled, statusFlagsSettled, runSheetsSettled, spFormSettled, day1aSettled] =
             await Promise.allSettled([
@@ -578,12 +582,12 @@ export class SharePointTracker {
                 formsDbAvailable
                     ? queryWithTimeout(getStatusFlagsBySubject(projectId, subjectIds), 3000)
                     : Promise.resolve(new Map<string, { is_screen_failed: boolean; is_withdrawn: boolean; screen_fail_reason: string | null; screen_fail_comments: string | null }>()),
-                (formsDbAvailable && formsConn)
-                    ? queryWithTimeout(formsConn.query(runSheetsQuery, [subjectIds]), 10000)
+                readyFormsConn
+                    ? queryWithTimeout(readyFormsConn.query(runSheetsQuery, [subjectIds]), 10000)
                     : Promise.resolve({ rows: [] }),
-                (formsDbAvailable && formsConn)
+                readyFormsConn
                     ? queryWithTimeout(
-                          formsConn.query(
+                          readyFormsConn.query(
                               `SELECT subject_id, (form_data->>'event_date')::date::text AS event_date
                                FROM sharepoint.sharepoint_forms
                                WHERE subject_id = ANY($1::text[])
