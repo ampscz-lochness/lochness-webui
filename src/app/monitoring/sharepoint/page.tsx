@@ -1027,6 +1027,10 @@ export default function SharePointTrackerPage() {
                                         <span className="inline-block w-4 border-0 border-t border-dashed border-green-400" />
                                         Secondary date (if different)
                                     </span>
+                                    <span className="inline-flex items-center gap-1">
+                                        <span className="inline-block w-4 border-0 border-t border-dashed border-violet-500" />
+                                        Session Date (available run sheets)
+                                    </span>
                                 </div>
                             )}
 
@@ -1055,6 +1059,33 @@ export default function SharePointTrackerPage() {
                                             const visibleDays = (timeline?.points ?? []).filter(
                                                 (d) => activeModalityTab === "all" || d.modality_key === activeModalityTab
                                             );
+                                            const sessionDateMarkers = (() => {
+                                                const grouped = new Map<number, { date: string; forms: string[] }>();
+                                                for (const rs of subject.run_sheets) {
+                                                    if (!rs.has_data) continue;
+                                                    const rsModality = data.run_sheet_form_to_modality[rs.form_name];
+                                                    if (activeModalityTab !== "all" && rsModality !== activeModalityTab) continue;
+
+                                                    const summary = rs.form_data_summary || {};
+                                                    const sessionDate = summary["session_date"] || rs.completion_date || null;
+                                                    if (!sessionDate) continue;
+
+                                                    const offset = timeline?.anchor === "day1a"
+                                                        ? (timeline.day1aDate ? diffDays(sessionDate, timeline.day1aDate) : null)
+                                                        : (timeline?.consentDate ? diffDays(sessionDate, timeline.consentDate) : rs.day_offset);
+                                                    if (offset === null) continue;
+
+                                                    const existing = grouped.get(offset);
+                                                    if (existing) {
+                                                        if (!existing.forms.includes(rs.form_name)) existing.forms.push(rs.form_name);
+                                                    } else {
+                                                        grouped.set(offset, { date: sessionDate, forms: [rs.form_name] });
+                                                    }
+                                                }
+                                                return [...grouped.entries()]
+                                                    .sort((a, b) => a[0] - b[0])
+                                                    .map(([offset, value]) => ({ offset, ...value }));
+                                            })();
                                             if (showLast24h && visibleDays.length === 0) return null;
                                             const isExpanded = expandedSubjectId === subject.subject_id;
 
@@ -1141,6 +1172,30 @@ export default function SharePointTrackerPage() {
                                                                     </>
                                                                 );
                                                             })()}
+                                                            {sessionDateMarkers.map((marker, idx) => {
+                                                                const xSession = toXPct(marker.offset);
+                                                                const formPreview = marker.forms.slice(0, 3).join(", ");
+                                                                const extraForms = marker.forms.length > 3 ? ` (+${marker.forms.length - 3} more)` : "";
+                                                                const tipLines = [
+                                                                    `Session Date: ${asReadableDate(marker.date)}`,
+                                                                    `Day ${marker.offset >= 0 ? "+" : ""}${marker.offset} from ${timeline?.anchor === "day1a" ? "Day 1a" : "Consent"}`,
+                                                                    `Run sheets: ${formPreview}${extraForms}`,
+                                                                ];
+                                                                return (
+                                                                    <div
+                                                                        key={`session-${idx}-${marker.offset}`}
+                                                                        className="absolute top-0 bottom-0 z-30 cursor-default"
+                                                                        style={{
+                                                                            left: `${xSession}%`,
+                                                                            width: "1px",
+                                                                            background: "repeating-linear-gradient(to bottom, rgba(139,92,246,0.8) 0px, rgba(139,92,246,0.8) 4px, transparent 4px, transparent 8px)",
+                                                                        }}
+                                                                        onMouseEnter={(e) => showTooltip(e, tipLines)}
+                                                                        onMouseMove={(e) => showTooltip(e, tipLines)}
+                                                                        onMouseLeave={hideTooltip}
+                                                                    />
+                                                                );
+                                                            })}
                                                             {visibleDays.map((day) => {
                                                                 const xLeft = toXPct(day.day_offset);
                                                                 const barW = Math.max(0.5, (1 / rangeSpan) * 100);
