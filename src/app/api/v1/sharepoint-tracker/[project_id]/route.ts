@@ -2,10 +2,9 @@ import { SharePointTracker, SharePointTrackerModelError } from "@/lib/models/sha
 
 export async function GET(
     _request: Request,
-    props: { params: Promise<{ project_id: string }> }
+    context: { params: { project_id: string } }
 ): Promise<Response> {
-    const params = await props.params;
-    const projectId = params.project_id;
+    const projectId = context.params.project_id;
 
     if (!projectId) {
         return new Response(JSON.stringify({ error: "Missing project_id" }), {

@@ -39,7 +39,7 @@ type RunSheetRow = {
 type DataSourceRequirementRow = {
     data_source_name: string;
     data_source_type: string | null;
-    data_source_metadata: Record<string, unknown> | null;
+    data_source_metadata: Record<string, unknown> | string | null;
 };
 
 // ── Column detection helpers ──────────────────────────────────────────────────
@@ -127,6 +127,26 @@ function getValueAtPath(input: unknown, path: string): unknown {
     return current;
 }
 
+function coerceMetadataObject(metadata: unknown): Record<string, unknown> | null {
+    if (!metadata) return null;
+    if (typeof metadata === "object") return metadata as Record<string, unknown>;
+    if (typeof metadata === "string") {
+        try {
+            const parsed = JSON.parse(metadata);
+            if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+function toStringIfPresent(value: unknown): string {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    return trimmed;
+}
+
 function extractJsonRequiredFromMetadata(metadata: Record<string, unknown> | null): boolean | null {
     if (!metadata) return null;
 
@@ -171,6 +191,23 @@ function extractJsonRequiredFromMetadata(metadata: Record<string, unknown> | nul
     }
 
     return null;
+}
+
+function dataSourceToSpModality(row: DataSourceRequirementRow): string | null {
+    const metadata = coerceMetadataObject(row.data_source_metadata);
+    const label = [
+        row.data_source_name,
+        row.data_source_type ?? "",
+        toStringIfPresent(getValueAtPath(metadata, "modality")),
+        toStringIfPresent(getValueAtPath(metadata, "form_name")),
+        toStringIfPresent(getValueAtPath(metadata, "form_title")),
+        toStringIfPresent(getValueAtPath(metadata, "drive_name")),
+        toStringIfPresent(getValueAtPath(metadata, "date_str")),
+    ]
+        .filter(Boolean)
+        .join(" ");
+
+    return formNameToModality(label);
 }
 
 function mergeJsonRequirement(existing: boolean | null, next: boolean | null): boolean | null {
@@ -306,10 +343,9 @@ export class SharePointTracker {
             transcript_sharepoint: null,
         };
         for (const row of (phase1[2] as { rows: DataSourceRequirementRow[] }).rows) {
-            const sourceLabel = `${row.data_source_name ?? ""} ${row.data_source_type ?? ""}`;
-            const modality = formNameToModality(sourceLabel);
+            const modality = dataSourceToSpModality(row);
             if (!modality) continue;
-            const jsonRequired = extractJsonRequiredFromMetadata(row.data_source_metadata);
+            const jsonRequired = extractJsonRequiredFromMetadata(coerceMetadataObject(row.data_source_metadata));
             jsonRequiredByModality[modality] = mergeJsonRequirement(
                 jsonRequiredByModality[modality] ?? null,
                 jsonRequired
@@ -365,17 +401,7 @@ export class SharePointTracker {
         const consentSubjects = consentResult.rows as ConsentSubjectRow[];
         const subjectIds = consentSubjects.map((r) => r.subject_id);
 
-        // ── 2. Status flags (formsdb) ─────────────────────────────────────────
-        let statusFlagsBySubject = new Map<
-            string,
-            {
-                is_screen_failed: boolean;
-                is_withdrawn: boolean;
-                screen_fail_reason: string | null;
-                screen_fail_comments: string | null;
-            }
-        >();
-        // ── Consent date lookup (built from already-fetched subjects) ─────────────
+        // ── 2. Consent date lookup (built from already-fetched subjects) ─────────
         const consentDateBySubject = new Map<string, string>();
         for (const r of consentSubjects) {
             if (r.consent_date) consentDateBySubject.set(r.subject_id, r.consent_date);
@@ -499,7 +525,12 @@ export class SharePointTracker {
         // consent_date is looked up in JS from consentDateBySubject — no JOIN required.
         const runSheetsQuery = `
             SELECT rf.subject_id, rf.form_name, rf.form_instance_number,
-                   rf.form_event_name AS redcap_event_name, rf.form_data,
+                   COALESCE(
+                       NULLIF(rf.form_event_name, ''),
+                       NULLIF(rf.form_data->>'redcap_event_name', ''),
+                       NULLIF(rf.form_data->>'event_name', '')
+                   ) AS redcap_event_name,
+                   rf.form_data,
                    (
                        rf.form_data IS NOT NULL AND rf.form_data::text <> '{}' AND rf.form_data::text <> 'null'
                        AND (
@@ -675,6 +706,60 @@ export class SharePointTracker {
                 });
             }
             runSheetForms = [...seenFormNames].sort();
+
+            // Fallback event-name fill from data_pulls metadata only when needed.
+            // This keeps the fast path lean while still restoring REDCap Event display
+            // for projects where form_event_name is not populated in forms.redcap_forms.
+            const needsEventFill = [...runSheetsBySubject.values()].some((rows) =>
+                rows.some((rs) => !rs.redcap_event_name)
+            );
+            if (needsEventFill && dataPullTable && hasPullMetadataColumn && runSheetForms.length > 0) {
+                try {
+                    const params: unknown[] = [subjectIds, runSheetForms];
+                    const projectFilter = hasDataPullProjectColumn ? "AND dp.project_id = $3" : "";
+                    if (hasDataPullProjectColumn) params.push(projectId);
+
+                    const eventFillQuery = `
+                        SELECT DISTINCT ON (
+                            dp.subject_id,
+                            dp.pull_metadata->>'form_name',
+                            COALESCE((dp.pull_metadata->>'form_instance_number')::int, 0)
+                        )
+                            dp.subject_id,
+                            dp.pull_metadata->>'form_name' AS form_name,
+                            COALESCE((dp.pull_metadata->>'form_instance_number')::int, 0) AS form_instance_number,
+                            NULLIF(dp.pull_metadata->>'event_name', '') AS event_name
+                        FROM ${dataPullTableSql} dp
+                        WHERE dp.subject_id = ANY($1::text[])
+                          AND dp.pull_metadata->>'form_name' = ANY($2::text[])
+                          AND NULLIF(dp.pull_metadata->>'event_name', '') IS NOT NULL
+                          ${projectFilter}
+                        ORDER BY
+                            dp.subject_id,
+                            dp.pull_metadata->>'form_name',
+                            COALESCE((dp.pull_metadata->>'form_instance_number')::int, 0),
+                            dp.${quoteIdentifier(pullTimestampColumn)} DESC NULLS LAST
+                    `;
+
+                    const eventFillResult = await connection.query(eventFillQuery, params);
+                    const eventNameByKey = new Map<string, string>();
+                    for (const row of eventFillResult.rows as { subject_id: string; form_name: string; form_instance_number: number; event_name: string }[]) {
+                        const key = `${row.subject_id}|${row.form_name}|${row.form_instance_number}`;
+                        if (!eventNameByKey.has(key)) eventNameByKey.set(key, row.event_name);
+                    }
+
+                    for (const [subjectId, rows] of runSheetsBySubject) {
+                        for (const rs of rows) {
+                            if (rs.redcap_event_name) continue;
+                            const key = `${subjectId}|${rs.form_name}|${rs.form_instance_number ?? 0}`;
+                            const recovered = eventNameByKey.get(key);
+                            if (recovered) rs.redcap_event_name = recovered;
+                        }
+                    }
+                } catch {
+                    // Non-critical fallback; keep response functional even if query fails.
+                }
+            }
         }
 
         // ── Process SharePoint form dates and attach nearest to each run sheet ──
@@ -717,6 +802,16 @@ export class SharePointTracker {
             const modality = formNameToModality(form);
             if (modality) runSheetFormToModality[form] = modality;
         }
+
+        // ── 6. Assemble per-subject payload ───────────────────────────────────
+        const subjects: SharePointSubject[] = consentSubjects.map((row) => ({
+            subject_id: row.subject_id,
+            site_id: row.site_id,
+            consent_date: row.consent_date,
+            is_consented: row.is_consented,
+            is_screen_failed: statusFlagsBySubject.get(row.subject_id)?.is_screen_failed ?? false,
+            is_withdrawn: statusFlagsBySubject.get(row.subject_id)?.is_withdrawn ?? false,
+            screen_fail_reason: statusFlagsBySubject.get(row.subject_id)?.screen_fail_reason ?? null,
             screen_fail_comments: statusFlagsBySubject.get(row.subject_id)?.screen_fail_comments ?? null,
             day1a_predose_date: day1aDatesBySubject.get(row.subject_id) ?? null,
             days: daysBySubject.get(row.subject_id) ?? [],
