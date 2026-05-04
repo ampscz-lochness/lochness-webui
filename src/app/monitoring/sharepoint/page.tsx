@@ -876,10 +876,10 @@ export default function SharePointTrackerPage() {
                                                                                                     <td className="border border-border px-2 py-1 font-mono text-[10px]">{rs.form_name}</td>
                                                                                                     <td className="border border-border px-2 py-1">{rs.redcap_event_name ?? "—"}</td>
                                                                                                     <td className="border border-border px-2 py-1 text-muted-foreground">{rs.form_instance_number ?? "—"}</td>
-                                                                                                    <td className="border border-border px-2 py-1 whitespace-nowrap">
+                                                                                                    <td className={`border border-border px-2 py-1 whitespace-nowrap${spDateMatch === true ? ' text-green-600 dark:text-green-400 font-medium' : ''}`}>
                                                                                                         {(() => { const d = summary['session_date'] || rs.completion_date; return d ? (
                                                                                                             <Tooltip>
-                                                                                                                <TooltipTrigger asChild><span className="cursor-default">{asReadableDate(d)}</span></TooltipTrigger>
+                                                                                                                <TooltipTrigger asChild><span className="cursor-default">{spDateMatch === true ? '✓ ' : ''}{asReadableDate(d)}</span></TooltipTrigger>
                                                                                                                 <TooltipContent><p className="text-xs"><code>*_interview_date</code>: {d}</p></TooltipContent>
                                                                                                             </Tooltip>
                                                                                                         ) : <span className="text-muted-foreground">—</span>; })()}
@@ -1369,10 +1369,10 @@ export default function SharePointTrackerPage() {
                                                                                     <td className="border border-border px-2 py-1 font-mono text-[10px]">{rs.form_name}</td>
                                                                                     <td className="border border-border px-2 py-1">{rs.redcap_event_name ?? "—"}</td>
                                                                                     <td className="border border-border px-2 py-1 text-muted-foreground">{rs.form_instance_number ?? "—"}</td>
-                                                                                    <td className="border border-border px-2 py-1 whitespace-nowrap">
+                                                                                    <td className={`border border-border px-2 py-1 whitespace-nowrap${spDateMatch === true ? ' text-green-600 dark:text-green-400 font-medium' : ''}`}>
                                                                                         {(() => { const d = summary['session_date'] || rs.completion_date; return d ? (
                                                                                             <Tooltip>
-                                                                                                <TooltipTrigger asChild><span className="cursor-default">{asReadableDate(d)}</span></TooltipTrigger>
+                                                                                                <TooltipTrigger asChild><span className="cursor-default">{spDateMatch === true ? '✓ ' : ''}{asReadableDate(d)}</span></TooltipTrigger>
                                                                                                 <TooltipContent><p className="text-xs"><code>*_interview_date</code>: {d}</p></TooltipContent>
                                                                                             </Tooltip>
                                                                                         ) : <span className="text-muted-foreground">—</span>; })()}

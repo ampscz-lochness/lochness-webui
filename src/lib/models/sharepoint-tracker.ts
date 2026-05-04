@@ -34,7 +34,6 @@ type RunSheetRow = {
     redcap_event_name: string | null;
     has_data: boolean;
     form_data: Record<string, unknown> | null;
-    consent_date: string | null;
 };
 
 type DataSourceRequirementRow = {
@@ -226,6 +225,36 @@ const CONSENT_DATE_CASE = `
 `;
 
 // ── Error class ───────────────────────────────────────────────────────────────
+// ── Schema detection cache ────────────────────────────────────────────────────
+// information_schema queries run on every request but the schema almost never
+// changes.  Cache results for 5 minutes so warm requests skip these round-trips.
+let _schemaCacheValue: {
+    dataPullTable: TableName | null;
+    subjectColumns: Set<string>;
+    dataPullColumns: Set<string>;
+} | null = null;
+let _schemaCachedAt = 0;
+const SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getCachedSchema(): Promise<{
+    dataPullTable: TableName | null;
+    subjectColumns: Set<string>;
+    dataPullColumns: Set<string>;
+}> {
+    if (_schemaCacheValue && Date.now() - _schemaCachedAt < SCHEMA_CACHE_TTL_MS) {
+        return _schemaCacheValue;
+    }
+    const dataPullTable = await getFirstExistingTable(["data_pulls", "data_pull"]);
+    const [subjectColumns, dataPullColumns] = await Promise.all([
+        getColumns("subjects"),
+        dataPullTable ? getColumns(dataPullTable) : Promise.resolve(new Set<string>()),
+    ]);
+    _schemaCacheValue = { dataPullTable, subjectColumns, dataPullColumns };
+    _schemaCachedAt = Date.now();
+    return _schemaCacheValue;
+}
+
+// ── Error class ───────────────────────────────────────────────────────────────
 
 export class SharePointTrackerModelError extends Error {
     constructor(
@@ -246,49 +275,46 @@ export class SharePointTracker {
         let formsConn: ReturnType<typeof getFormsConnection> | null = null;
         let formsDbAvailable = false;
 
-        try {
-            formsConn = getFormsConnection();
-            await queryWithTimeout(formsConn.query("SELECT 1"), 1500);
-            formsDbAvailable = true;
-        } catch {
-            formsDbAvailable = false;
-        }
+        // ── Phase 1: parallel setup (schema cache + formsdb probe + data_sources) ──
+        const phase1 = await Promise.all([
+            getCachedSchema(),
+            // formsdb probe — side-effect only, sets formsConn / formsDbAvailable
+            (async (): Promise<void> => {
+                try {
+                    formsConn = getFormsConnection();
+                    await queryWithTimeout(formsConn.query("SELECT 1"), 1500);
+                    formsDbAvailable = true;
+                } catch {
+                    formsDbAvailable = false;
+                }
+            })(),
+            connection
+                .query(
+                    `SELECT data_source_name, data_source_type, data_source_metadata
+                     FROM public.data_sources
+                     WHERE project_id = $1
+                       AND COALESCE(data_source_is_active, true) = true`,
+                    [projectId]
+                )
+                .catch((): { rows: DataSourceRequirementRow[] } => ({ rows: [] })),
+        ]);
 
+        const { dataPullTable, subjectColumns, dataPullColumns } = phase1[0];
         const jsonRequiredByModality: Record<string, boolean | null> = {
             eeg_sharepoint: null,
             mindlamp_qc_sharepoint: null,
             transcript_sharepoint: null,
         };
-
-        try {
-            const sourceRequirementResult = await connection.query(
-                `SELECT data_source_name, data_source_type, data_source_metadata
-                 FROM public.data_sources
-                 WHERE project_id = $1
-                   AND COALESCE(data_source_is_active, true) = true`,
-                [projectId]
+        for (const row of (phase1[2] as { rows: DataSourceRequirementRow[] }).rows) {
+            const sourceLabel = `${row.data_source_name ?? ""} ${row.data_source_type ?? ""}`;
+            const modality = formNameToModality(sourceLabel);
+            if (!modality) continue;
+            const jsonRequired = extractJsonRequiredFromMetadata(row.data_source_metadata);
+            jsonRequiredByModality[modality] = mergeJsonRequirement(
+                jsonRequiredByModality[modality] ?? null,
+                jsonRequired
             );
-
-            for (const row of sourceRequirementResult.rows as DataSourceRequirementRow[]) {
-                const sourceLabel = `${row.data_source_name ?? ""} ${row.data_source_type ?? ""}`;
-                const modality = formNameToModality(sourceLabel);
-                if (!modality) continue;
-                const jsonRequired = extractJsonRequiredFromMetadata(row.data_source_metadata);
-                jsonRequiredByModality[modality] = mergeJsonRequirement(
-                    jsonRequiredByModality[modality] ?? null,
-                    jsonRequired
-                );
-            }
-        } catch {
-            // data_sources metadata is optional for this view; fallback to null requirements
         }
-
-        const dataPullTable = await getFirstExistingTable(["data_pulls", "data_pull"]);
-
-        const [subjectColumns, dataPullColumns] = await Promise.all([
-            getColumns("subjects"),
-            dataPullTable ? getColumns(dataPullTable) : Promise.resolve(new Set<string>()),
-        ]);
 
         if (
             !subjectColumns.has("project_id") ||
@@ -349,49 +375,47 @@ export class SharePointTracker {
                 screen_fail_comments: string | null;
             }
         >();
-        if (formsDbAvailable) {
-            try {
-                statusFlagsBySubject = await queryWithTimeout(
-                    getStatusFlagsBySubject(projectId, subjectIds),
-                    3000
-                );
-            } catch {
-                // formsdb is intentionally isolated; keep tracker functional if unavailable
-            }
+        // ── Consent date lookup (built from already-fetched subjects) ─────────────
+        const consentDateBySubject = new Map<string, string>();
+        for (const r of consentSubjects) {
+            if (r.consent_date) consentDateBySubject.set(r.subject_id, r.consent_date);
         }
 
-        const emptyPayload: SharePointPayload = {
-            project_id: projectId,
-            subjects: consentSubjects.map((r) => ({
-                subject_id: r.subject_id,
-                site_id: r.site_id,
-                consent_date: r.consent_date,
-                is_consented: r.is_consented,
-                is_screen_failed: statusFlagsBySubject.get(r.subject_id)?.is_screen_failed ?? false,
-                is_withdrawn: statusFlagsBySubject.get(r.subject_id)?.is_withdrawn ?? false,
-                screen_fail_reason: statusFlagsBySubject.get(r.subject_id)?.screen_fail_reason ?? null,
-                screen_fail_comments: statusFlagsBySubject.get(r.subject_id)?.screen_fail_comments ?? null,
-                days: [],
-                run_sheets: [],
-            })),
-            modality_keys: [],
-            run_sheet_forms: [],
-            run_sheet_form_to_modality: {},
-            metadata: {
-                data_pulls_available: false,
-                file_md5_available: hasFileMd5Column,
-                json_required_by_modality: jsonRequiredByModality,
-                day_offset_range: null,
-            },
-        };
-
+        // ── Early return when data_pulls unavailable (statusFlags fetched here only) ──
         if (
             subjectIds.length === 0 ||
             !hasDataPullSubjectColumn ||
             !dataPullTableSql ||
             !pullTimestampColumn
         ) {
-            return emptyPayload;
+            let sfMap = new Map<string, { is_screen_failed: boolean; is_withdrawn: boolean; screen_fail_reason: string | null; screen_fail_comments: string | null }>();
+            if (formsDbAvailable && subjectIds.length > 0) {
+                try { sfMap = await queryWithTimeout(getStatusFlagsBySubject(projectId, subjectIds), 3000); } catch { /* ignore */ }
+            }
+            return {
+                project_id: projectId,
+                subjects: consentSubjects.map((r) => ({
+                    subject_id: r.subject_id,
+                    site_id: r.site_id,
+                    consent_date: r.consent_date,
+                    is_consented: r.is_consented,
+                    is_screen_failed: sfMap.get(r.subject_id)?.is_screen_failed ?? false,
+                    is_withdrawn: sfMap.get(r.subject_id)?.is_withdrawn ?? false,
+                    screen_fail_reason: sfMap.get(r.subject_id)?.screen_fail_reason ?? null,
+                    screen_fail_comments: sfMap.get(r.subject_id)?.screen_fail_comments ?? null,
+                    days: [],
+                    run_sheets: [],
+                })),
+                modality_keys: [],
+                run_sheet_forms: [],
+                run_sheet_form_to_modality: {},
+                metadata: {
+                    data_pulls_available: false,
+                    file_md5_available: hasFileMd5Column,
+                    json_required_by_modality: jsonRequiredByModality,
+                    day_offset_range: null,
+                },
+            };
         }
 
         const pullSourceSelect = pullSourceColumn
@@ -402,37 +426,25 @@ export class SharePointTracker {
             ? `NULLIF(${quoteIdentifier(pullFilePathColumn)}::text, '')`
             : "NULL::text";
 
-        // ── 3. SharePoint file pulls ──────────────────────────────────────────
         const subjectsWithConsentDate = consentSubjects
             .filter((r) => r.consent_date !== null)
             .map((r) => r.subject_id);
 
-        const daysBySubject = new Map<string, SharePointActivityRow[]>();
-
-        if (subjectsWithConsentDate.length > 0) {
-            let activityQuery: string;
-
-            if (hasFileMd5Column) {
-                activityQuery = `
+        // ── Build Phase 3 query strings ───────────────────────────────────────
+        const activityQuery = subjectsWithConsentDate.length > 0
+            ? (hasFileMd5Column
+                ? `
                     WITH consent_by_subject AS (
-                        SELECT
-                            subject_id,
-                            ${CONSENT_DATE_CASE} AS consent_date
+                        SELECT subject_id, ${CONSENT_DATE_CASE} AS consent_date
                         FROM public.subjects
-                        WHERE project_id = $2
-                          AND subject_id = ANY($1::text[])
+                        WHERE project_id = $2 AND subject_id = ANY($1::text[])
                     ),
                     classified AS (
-                        SELECT
-                            p.subject_id,
-                            ${SP_MODALITY_CASE(pullSourceSelect)} AS modality_key,
-                            CASE WHEN LOWER(COALESCE(${filePathSelect}, '')) LIKE '%.json'
-                                THEN 'json' ELSE 'actual'
-                            END AS file_type,
-                            date_trunc('day', p.${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS calendar_date,
-                            p.${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_ts,
-                            NULLIF(p.file_md5::text, '') AS file_md5,
-                            ${filePathSelect} AS file_path
+                        SELECT p.subject_id, ${SP_MODALITY_CASE(pullSourceSelect)} AS modality_key,
+                               CASE WHEN LOWER(COALESCE(${filePathSelect}, '')) LIKE '%.json' THEN 'json' ELSE 'actual' END AS file_type,
+                               date_trunc('day', p.${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS calendar_date,
+                               p.${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_ts,
+                               NULLIF(p.file_md5::text, '') AS file_md5, ${filePathSelect} AS file_path
                         FROM ${dataPullTableSql} p
                         WHERE p.subject_id = ANY($1::text[])
                           ${hasDataPullProjectColumn ? "AND p.project_id = $2" : ""}
@@ -441,86 +453,125 @@ export class SharePointTracker {
                     ),
                     deduped AS (
                         SELECT DISTINCT ON (subject_id, modality_key, file_type, file_md5)
-                            subject_id, modality_key, file_type, calendar_date, pull_ts, file_path
+                               subject_id, modality_key, file_type, calendar_date, pull_ts, file_path
                         FROM classified
                         WHERE modality_key IS NOT NULL AND file_md5 IS NOT NULL
                         ORDER BY subject_id, modality_key, file_type, file_md5, pull_ts ASC NULLS LAST
                     )
-                    SELECT
-                        d.subject_id,
-                        d.modality_key,
-                        d.file_type,
-                        d.calendar_date::text AS calendar_date,
-                        (d.calendar_date - c.consent_date)::int AS day_offset,
-                        COUNT(*)::int AS unique_file_count,
-                        COALESCE(
-                            array_agg(d.file_path ORDER BY d.pull_ts DESC NULLS LAST)
-                                FILTER (WHERE d.file_path IS NOT NULL),
-                            ARRAY[]::text[]
-                        ) AS file_paths
-                    FROM deduped d
-                    JOIN consent_by_subject c USING (subject_id)
+                    SELECT d.subject_id, d.modality_key, d.file_type,
+                           d.calendar_date::text AS calendar_date,
+                           (d.calendar_date - c.consent_date)::int AS day_offset,
+                           COUNT(*)::int AS unique_file_count,
+                           COALESCE(array_agg(d.file_path ORDER BY d.pull_ts DESC NULLS LAST) FILTER (WHERE d.file_path IS NOT NULL), ARRAY[]::text[]) AS file_paths
+                    FROM deduped d JOIN consent_by_subject c USING (subject_id)
                     WHERE c.consent_date IS NOT NULL
                     GROUP BY d.subject_id, d.modality_key, d.file_type, d.calendar_date, c.consent_date
-                    ORDER BY d.subject_id, day_offset, d.modality_key, d.file_type
-                    LIMIT 10000
-                `;
-            } else {
-                activityQuery = `
+                    ORDER BY d.subject_id, day_offset, d.modality_key, d.file_type LIMIT 10000`
+                : `
                     WITH consent_by_subject AS (
-                        SELECT
-                            subject_id,
-                            ${CONSENT_DATE_CASE} AS consent_date
+                        SELECT subject_id, ${CONSENT_DATE_CASE} AS consent_date
                         FROM public.subjects
-                        WHERE project_id = $2
-                          AND subject_id = ANY($1::text[])
+                        WHERE project_id = $2 AND subject_id = ANY($1::text[])
                     ),
                     classified AS (
-                        SELECT
-                            p.subject_id,
-                            ${SP_MODALITY_CASE(pullSourceSelect)} AS modality_key,
-                            CASE WHEN LOWER(COALESCE(${filePathSelect}, '')) LIKE '%.json'
-                                THEN 'json' ELSE 'actual'
-                            END AS file_type,
-                            date_trunc('day', p.${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS calendar_date,
-                            p.${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_ts,
-                            ${filePathSelect} AS file_path
+                        SELECT p.subject_id, ${SP_MODALITY_CASE(pullSourceSelect)} AS modality_key,
+                               CASE WHEN LOWER(COALESCE(${filePathSelect}, '')) LIKE '%.json' THEN 'json' ELSE 'actual' END AS file_type,
+                               date_trunc('day', p.${quoteIdentifier(pullTimestampColumn)}::timestamptz)::date AS calendar_date,
+                               p.${quoteIdentifier(pullTimestampColumn)}::timestamptz AS pull_ts, ${filePathSelect} AS file_path
                         FROM ${dataPullTableSql} p
                         WHERE p.subject_id = ANY($1::text[])
                           ${hasDataPullProjectColumn ? "AND p.project_id = $2" : ""}
                           AND p.${quoteIdentifier(pullTimestampColumn)} IS NOT NULL
                     )
-                    SELECT
-                        c2.subject_id,
-                        c2.modality_key,
-                        c2.file_type,
-                        c2.calendar_date::text AS calendar_date,
-                        (c2.calendar_date - cs.consent_date)::int AS day_offset,
-                        COUNT(*)::int AS unique_file_count,
-                        COALESCE(
-                            array_agg(c2.file_path ORDER BY c2.pull_ts DESC NULLS LAST)
-                                FILTER (WHERE c2.file_path IS NOT NULL),
-                            ARRAY[]::text[]
-                        ) AS file_paths
-                    FROM classified c2
-                    JOIN consent_by_subject cs USING (subject_id)
-                    WHERE c2.modality_key IS NOT NULL
-                      AND cs.consent_date IS NOT NULL
+                    SELECT c2.subject_id, c2.modality_key, c2.file_type,
+                           c2.calendar_date::text AS calendar_date,
+                           (c2.calendar_date - cs.consent_date)::int AS day_offset,
+                           COUNT(*)::int AS unique_file_count,
+                           COALESCE(array_agg(c2.file_path ORDER BY c2.pull_ts DESC NULLS LAST) FILTER (WHERE c2.file_path IS NOT NULL), ARRAY[]::text[]) AS file_paths
+                    FROM classified c2 JOIN consent_by_subject cs USING (subject_id)
+                    WHERE c2.modality_key IS NOT NULL AND cs.consent_date IS NOT NULL
                     GROUP BY c2.subject_id, c2.modality_key, c2.file_type, c2.calendar_date, cs.consent_date
-                    ORDER BY c2.subject_id, day_offset, c2.modality_key, c2.file_type
-                    LIMIT 10000
-                `;
-            }
+                    ORDER BY c2.subject_id, day_offset, c2.modality_key, c2.file_type LIMIT 10000`)
+            : null;
 
-            const activityResult = await connection.query(activityQuery, [
-                subjectsWithConsentDate,
-                projectId,
+        // Merged run-sheets query: discover + records in one round-trip.
+        // form_event_name is the dedicated column (no JSON extraction needed).
+        // consent_date is looked up in JS from consentDateBySubject — no JOIN required.
+        const runSheetsQuery = `
+            SELECT rf.subject_id, rf.form_name, rf.form_instance_number,
+                   rf.form_event_name AS redcap_event_name, rf.form_data,
+                   (
+                       rf.form_data IS NOT NULL AND rf.form_data::text <> '{}' AND rf.form_data::text <> 'null'
+                       AND (
+                           rf.form_data->>(rf.form_name || '_complete') = '2'
+                           OR EXISTS (SELECT 1 FROM jsonb_each_text(rf.form_data) kv WHERE kv.key LIKE '%_performed' AND kv.value = '1')
+                           OR COALESCE(LOWER(rf.form_data->>'data_acquired'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'session_completed'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'session_data_acquired'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'acquisition_complete'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'eeg_data_collected'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'eeg_acquired'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'checkin_complete'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'data_collected'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'recording_complete'), '') IN ('yes', 'true', '1', 'y')
+                           OR COALESCE(LOWER(rf.form_data->>'transcript_acquired'), '') IN ('yes', 'true', '1', 'y')
+                           OR EXISTS (SELECT 1 FROM jsonb_each_text(rf.form_data) kv WHERE kv.key LIKE '%_complete' AND kv.value = '2')
+                       )
+                   ) AS has_data
+            FROM forms.redcap_forms rf
+            WHERE rf.subject_id = ANY($1::text[])
+              AND (
+                  LOWER(rf.form_name) LIKE '%eeg%'
+               OR LOWER(rf.form_name) LIKE '%transcript%'
+               OR LOWER(rf.form_name) LIKE '%mindlamp%'
+               OR LOWER(rf.form_name) LIKE '%run_sheet%'
+               OR LOWER(rf.form_name) LIKE '%runsheet%'
+               OR LOWER(rf.form_name) LIKE '%sharepoint%'
+              )
+            ORDER BY rf.subject_id, rf.form_name, COALESCE(rf.form_instance_number, 0)`;
+
+        const day1aQuery = (dataPullTable && hasPullMetadataColumn)
+            ? `SELECT dp.subject_id, MIN((dp.pull_timestamp::date)::text) AS day1a_date
+               FROM ${quoteIdentifier(dataPullTable)} dp
+               WHERE dp.subject_id = ANY($1::text[])
+                 AND dp.pull_metadata->>'event_name' ILIKE '%day_1a%predose%'
+               GROUP BY dp.subject_id`
+            : null;
+
+        // ── Phase 3: fire all independent queries in parallel ─────────────────
+        const [activitySettled, statusFlagsSettled, runSheetsSettled, spFormSettled, day1aSettled] =
+            await Promise.allSettled([
+                activityQuery
+                    ? connection.query(activityQuery, [subjectsWithConsentDate, projectId])
+                    : Promise.resolve({ rows: [] }),
+                formsDbAvailable
+                    ? queryWithTimeout(getStatusFlagsBySubject(projectId, subjectIds), 3000)
+                    : Promise.resolve(new Map<string, { is_screen_failed: boolean; is_withdrawn: boolean; screen_fail_reason: string | null; screen_fail_comments: string | null }>()),
+                (formsDbAvailable && formsConn)
+                    ? queryWithTimeout(formsConn.query(runSheetsQuery, [subjectIds]), 10000)
+                    : Promise.resolve({ rows: [] }),
+                (formsDbAvailable && formsConn)
+                    ? queryWithTimeout(
+                          formsConn.query(
+                              `SELECT subject_id, (form_data->>'event_date')::date::text AS event_date
+                               FROM sharepoint.sharepoint_forms
+                               WHERE subject_id = ANY($1::text[])
+                                 AND form_data->>'event_date' IS NOT NULL`,
+                              [subjectIds]
+                          ),
+                          5000
+                      )
+                    : Promise.resolve({ rows: [] }),
+                day1aQuery
+                    ? connection.query(day1aQuery, [subjectIds])
+                    : Promise.resolve({ rows: [] }),
             ]);
 
-            for (const row of activityResult.rows as SpActivityRow[]) {
-                if (!daysBySubject.has(row.subject_id)) {
-                    daysBySubject.set(row.subject_id, []);
-                }
+        // ── Process activity results ──────────────────────────────────────────
+        const daysBySubject = new Map<string, SharePointActivityRow[]>();
+        if (activitySettled.status === "fulfilled") {
+            for (const row of activitySettled.value.rows as SpActivityRow[]) {
+                if (!daysBySubject.has(row.subject_id)) daysBySubject.set(row.subject_id, []);
                 daysBySubject.get(row.subject_id)!.push({
                     day_offset: parseCount(row.day_offset),
                     calendar_date: row.calendar_date,
@@ -532,370 +583,140 @@ export class SharePointTracker {
             }
         }
 
-        // ── 4. Discover run sheet forms + records (formsdb) ───────────────────
+        // ── Process status flags ──────────────────────────────────────────────
+        const statusFlagsBySubject =
+            statusFlagsSettled.status === "fulfilled"
+                ? statusFlagsSettled.value
+                : new Map<string, { is_screen_failed: boolean; is_withdrawn: boolean; screen_fail_reason: string | null; screen_fail_comments: string | null }>();
+
+        // ── Process run sheets (merged discover+records result) ───────────────
         let runSheetForms: string[] = [];
         const runSheetsBySubject = new Map<string, RunSheetRecord[]>();
 
-        try {
-            if (!formsDbAvailable || !formsConn) {
-                throw new Error("formsdb unavailable");
-            }
-
-            // Discover forms with SharePoint-relevant names for this project's subjects
-            const discoverResult = await queryWithTimeout(formsConn.query(
-                `SELECT DISTINCT rf.form_name
-                 FROM forms.redcap_forms rf
-                 JOIN public.subjects s ON s.subject_id = rf.subject_id
-                 JOIN public.sites si ON si.site_id = s.site_id
-                 WHERE si.project_id = $1
-                   AND rf.subject_id = ANY($2::text[])
-                   AND (
-                       LOWER(rf.form_name) LIKE '%eeg%'
-                    OR LOWER(rf.form_name) LIKE '%transcript%'
-                    OR LOWER(rf.form_name) LIKE '%mindlamp%'
-                    OR LOWER(rf.form_name) LIKE '%run_sheet%'
-                    OR LOWER(rf.form_name) LIKE '%runsheet%'
-                    OR LOWER(rf.form_name) LIKE '%sharepoint%'
-                   )
-                 ORDER BY rf.form_name`,
-                [projectId, subjectIds]
-            ), 5000);
-            runSheetForms = (discoverResult.rows as { form_name: string }[]).map((r) => r.form_name);
-
-            if (runSheetForms.length > 0) {
-                const recordsResult = await queryWithTimeout(formsConn.query(
-                    `SELECT
-                         rf.subject_id,
-                         rf.form_name,
-                         rf.form_instance_number,
-                         rf.form_event_name AS redcap_event_name,
-                         rf.form_data,
-                         NULLIF(subject_metadata->>'consent_date', '')::text AS consent_date,
-                         (
-                             rf.form_data IS NOT NULL
-                             AND rf.form_data::text <> '{}'
-                             AND rf.form_data::text <> 'null'
-                             AND (
-                                 -- REDCap completion status = Complete (2)
-                                 rf.form_data->>(rf.form_name || '_complete') = '2'
-                                 -- Primary signal: any *_performed field = '1' (used by all known run sheet forms)
-                                 OR EXISTS (
-                                     SELECT 1 FROM jsonb_each_text(rf.form_data) AS kv
-                                     WHERE kv.key LIKE '%_performed' AND kv.value = '1'
-                                 )
-                                 -- Explicit data acquisition flags (legacy field names)
-                                 OR COALESCE(LOWER(rf.form_data->>'data_acquired'), '') IN ('yes', 'true', '1', 'y')
-                                 OR COALESCE(LOWER(rf.form_data->>'session_completed'), '') IN ('yes', 'true', '1', 'y')
-                                 OR COALESCE(LOWER(rf.form_data->>'session_data_acquired'), '') IN ('yes', 'true', '1', 'y')
-                                 OR COALESCE(LOWER(rf.form_data->>'acquisition_complete'), '') IN ('yes', 'true', '1', 'y')
-                                 -- EEG-specific: eeg_data_collected, eeg_acquired
-                                 OR COALESCE(LOWER(rf.form_data->>'eeg_data_collected'), '') IN ('yes', 'true', '1', 'y')
-                                 OR COALESCE(LOWER(rf.form_data->>'eeg_acquired'), '') IN ('yes', 'true', '1', 'y')
-                                 -- MindLAMP-specific: checkin_complete, data_collected
-                                 OR COALESCE(LOWER(rf.form_data->>'checkin_complete'), '') IN ('yes', 'true', '1', 'y')
-                                 OR COALESCE(LOWER(rf.form_data->>'data_collected'), '') IN ('yes', 'true', '1', 'y')
-                                 -- Transcript-specific: recording_complete, transcript_acquired
-                                 OR COALESCE(LOWER(rf.form_data->>'recording_complete'), '') IN ('yes', 'true', '1', 'y')
-                                 OR COALESCE(LOWER(rf.form_data->>'transcript_acquired'), '') IN ('yes', 'true', '1', 'y')
-                                 -- Generic: any field ending in _complete = '2' (catches other REDCap instruments)
-                                 OR EXISTS (
-                                     SELECT 1 FROM jsonb_each_text(rf.form_data) AS kv
-                                     WHERE kv.key LIKE '%_complete' AND kv.value = '2'
-                                 )
-                             )
-                         ) AS has_data
-                     FROM forms.redcap_forms rf
-                     JOIN public.subjects s ON s.subject_id = rf.subject_id
-                     JOIN public.sites si ON si.site_id = s.site_id
-                     WHERE si.project_id = $1
-                                             AND rf.subject_id = ANY($2::text[])
-                                             AND rf.form_name = ANY($3::text[])
-                     ORDER BY rf.subject_id, rf.form_name, COALESCE(rf.form_instance_number, 0)`,
-                                        [projectId, subjectIds, runSheetForms]
-                                ), 7000);
-
-                // Helper to extract session date from form_data.
-                // Priority: *_interview_date (used by all known run sheet forms), then *_timestamp.
-                const extractFormTimestamp = (form: Record<string, unknown> | null, formName: string): string | null => {
-                    if (!form) return null;
-                    // Priority 1: any field ending in _interview_date (chreeg_interview_date, chrdig_interview_date, chrav_interview_date, …)
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_interview_date') && val && typeof val === 'string') {
-                            const trimmed = val.trim();
-                            if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-                        }
+        if (runSheetsSettled.status === "fulfilled") {
+            // Helpers (defined here, used below)
+            const extractFormTimestamp = (form: Record<string, unknown> | null, formName: string): string | null => {
+                if (!form) return null;
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_interview_date') && val && typeof val === 'string') {
+                        const trimmed = val.trim();
+                        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
                     }
-                    // Priority 2: [form_name]_timestamp
-                    const timestampKey = `${formName}_timestamp`;
-                    const ts = form[timestampKey] as string | undefined;
-                    if (ts && typeof ts === 'string' && ts.trim()) {
-                        return ts.trim().split('T')[0];
-                    }
-                    // Priority 3: generic timestamp
-                    const genericTs = form['timestamp'] as string | undefined;
-                    if (genericTs && typeof genericTs === 'string' && genericTs.trim()) {
-                        return genericTs.trim().split('T')[0];
-                    }
-                    return null;
-                };
-
-                // Helper to extract relevant form_data fields for run sheet display.
-                // Uses pattern matching on field names to work across all form types.
-                const extractRunSheetFieldSummary = (form: Record<string, unknown> | null, formName: string): Record<string, string> => {
-                    const summary: Record<string, string> = {};
-                    if (!form) return summary;
-
-                    // REDCap completion status: [form_name]_complete
-                    const completionKey = `${formName}_complete`;
-                    const completionVal = form[completionKey];
-                    if (completionVal !== null && completionVal !== undefined) {
-                        summary['completion'] = String(completionVal).trim();
-                    }
-
-                    // Session date: any field ending in _interview_date
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_interview_date') && val && typeof val === 'string') {
-                            const trimmed = val.trim();
-                            if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-                                summary['session_date'] = trimmed;
-                                break;
-                            }
-                        }
-                    }
-
-                    // Performed / acquired: any field ending in _performed (1=yes, 0=no)
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_performed') && val !== null && val !== undefined) {
-                            summary['performed'] = String(val).trim();
-                            break;
-                        }
-                    }
-
-                    // REDCap user: any field ending in _redcap_user
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_redcap_user') && val && typeof val === 'string') {
-                            const trimmed = val.trim();
-                            if (trimmed) { summary['redcap_user'] = trimmed; break; }
-                        }
-                    }
-
-                    // Technician/RA: any field ending in _primaryperson
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_primaryperson') && val && typeof val === 'string') {
-                            const trimmed = val.trim();
-                            if (trimmed) { summary['technician'] = trimmed; break; }
-                        }
-                    }
-
-                    // Start time: any field ending in _start
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_start') && val && typeof val === 'string') {
-                            const trimmed = val.trim();
-                            if (trimmed) { summary['start_time'] = trimmed; break; }
-                        }
-                    }
-
-                    // End time: any field ending in _end
-                    for (const [key, val] of Object.entries(form)) {
-                        if (key.endsWith('_end') && val && typeof val === 'string') {
-                            const trimmed = val.trim();
-                            if (trimmed) { summary['end_time'] = trimmed; break; }
-                        }
-                    }
-
-                    // EEG runs completed: count keys matching chreeg_run[0-9]+ = '1'
-                    let runsCompleted = 0;
-                    let runsTotal = 0;
-                    for (const [key, val] of Object.entries(form)) {
-                        if (/^chreeg_run\d+$/.test(key)) {
-                            runsTotal++;
-                            if (String(val).trim() === '1') runsCompleted++;
-                        }
-                    }
-                    if (runsTotal > 0) summary['runs'] = `${runsCompleted}/${runsTotal}`;
-
-                    // Cap size and head circumference (EEG-specific)
-                    if (form['chreeg_cap_size'] !== null && form['chreeg_cap_size'] !== undefined) {
-                        summary['cap_size'] = String(form['chreeg_cap_size']).trim();
-                    }
-                    if (form['chreeg_head_cir'] !== null && form['chreeg_head_cir'] !== undefined) {
-                        summary['head_cir'] = String(form['chreeg_head_cir']).trim();
-                    }
-
-                    // Data upload flags (transcript form: chrav_nsi_upload, chrav_psychs_upload)
-                    if (form['chrav_nsi_upload'] !== null && form['chrav_nsi_upload'] !== undefined) {
-                        summary['nsi_upload'] = String(form['chrav_nsi_upload']).trim();
-                    }
-                    if (form['chrav_psychs_upload'] !== null && form['chrav_psychs_upload'] !== undefined) {
-                        summary['psychs_upload'] = String(form['chrav_psychs_upload']).trim();
-                    }
-
-                    return summary;
-                };
-
-                // ── Cross-reference event names from data_pulls ────────────
-                // Some run sheets may not have redcap_event_name in form_data; try data_pulls
-                const eventNameFromPulls = new Map<string, string>(); // key: subject_id|form_name|instance
-                try {
-                    if (dataPullTable && hasPullMetadataColumn) {
-                        const crossRefQuery = `
-                            SELECT DISTINCT ON (dp.subject_id, dp.pull_metadata->>'form_name', COALESCE((dp.pull_metadata->>'form_instance_number')::int, 0))
-                                dp.subject_id,
-                                dp.pull_metadata->>'form_name' AS form_name,
-                                COALESCE((dp.pull_metadata->>'form_instance_number')::int, 0) AS form_instance_number,
-                                dp.pull_metadata->>'event_name' AS event_name
-                            FROM ${quoteIdentifier(dataPullTable)} dp
-                            JOIN public.subjects s ON s.subject_id = dp.subject_id
-                            JOIN public.sites si ON si.site_id = s.site_id
-                            WHERE si.project_id = $1
-                              AND dp.pull_metadata->>'form_name' = ANY($2::text[])
-                              AND dp.pull_metadata->>'event_name' IS NOT NULL
-                            ORDER BY dp.subject_id, dp.pull_metadata->>'form_name', COALESCE((dp.pull_metadata->>'form_instance_number')::int, 0), dp.pull_timestamp DESC
-                        `;
-                        const crossRefResult = await connection.query(crossRefQuery, [projectId, runSheetForms]);
-                        for (const row of crossRefResult.rows as { subject_id: string; form_name: string; form_instance_number: number; event_name: string }[]) {
-                            const key = `${row.subject_id}|${row.form_name}|${row.form_instance_number}`;
-                            if (!eventNameFromPulls.has(key)) {
-                                eventNameFromPulls.set(key, row.event_name);
-                            }
-                        }
-                    }
-                } catch {
-                    // Non-critical; continue without cross-reference
                 }
+                const ts = form[`${formName}_timestamp`] as string | undefined;
+                if (ts && typeof ts === 'string' && ts.trim()) return ts.trim().split('T')[0];
+                const genericTs = form['timestamp'] as string | undefined;
+                if (genericTs && typeof genericTs === 'string' && genericTs.trim()) return genericTs.trim().split('T')[0];
+                return null;
+            };
 
-                for (const row of recordsResult.rows as RunSheetRow[]) {
-                    if (!runSheetsBySubject.has(row.subject_id)) {
-                        runSheetsBySubject.set(row.subject_id, []);
+            const extractRunSheetFieldSummary = (form: Record<string, unknown> | null, formName: string): Record<string, string> => {
+                const summary: Record<string, string> = {};
+                if (!form) return summary;
+                const completionVal = form[`${formName}_complete`];
+                if (completionVal != null) summary['completion'] = String(completionVal).trim();
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_interview_date') && val && typeof val === 'string') {
+                        const trimmed = val.trim();
+                        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) { summary['session_date'] = trimmed; break; }
                     }
-
-                    // Cross-reference event name from data_pulls if form_data doesn't have it
-                    let redcapEventName = row.redcap_event_name;
-                    if (!redcapEventName) {
-                        const crossRefKey = `${row.subject_id}|${row.form_name}|${row.form_instance_number ?? 0}`;
-                        redcapEventName = eventNameFromPulls.get(crossRefKey) ?? null;
-                    }
-
-                    // Calculate day offset from consent date
-                    let dayOffset: number | null = null;
-                    let completionDate: string | null = null;
-
-                    const formTimestamp = extractFormTimestamp(row.form_data, row.form_name);
-                    if (formTimestamp && row.consent_date) {
-                        completionDate = formTimestamp;
-                        try {
-                            const consentDateParsed = new Date(row.consent_date);
-                            const formDateParsed = new Date(formTimestamp);
-                            dayOffset = Math.floor((formDateParsed.getTime() - consentDateParsed.getTime()) / (1000 * 60 * 60 * 24));
-                        } catch {
-                            // If date parsing fails, keep dayOffset as null
-                        }
-                    }
-
-                    runSheetsBySubject.get(row.subject_id)!.push({
-                        form_name: row.form_name,
-                        form_instance_number: row.form_instance_number,
-                        redcap_event_name: redcapEventName,
-                        has_data: Boolean(row.has_data),
-                        completion_date: completionDate,
-                        day_offset: dayOffset,
-                        form_data_summary: extractRunSheetFieldSummary(row.form_data, row.form_name),
-                    });
                 }
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_performed') && val != null) { summary['performed'] = String(val).trim(); break; }
+                }
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_redcap_user') && val && typeof val === 'string' && val.trim()) { summary['redcap_user'] = val.trim(); break; }
+                }
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_primaryperson') && val && typeof val === 'string' && val.trim()) { summary['technician'] = val.trim(); break; }
+                }
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_start') && val && typeof val === 'string' && val.trim()) { summary['start_time'] = val.trim(); break; }
+                }
+                for (const [key, val] of Object.entries(form)) {
+                    if (key.endsWith('_end') && val && typeof val === 'string' && val.trim()) { summary['end_time'] = val.trim(); break; }
+                }
+                let runsCompleted = 0; let runsTotal = 0;
+                for (const [key, val] of Object.entries(form)) {
+                    if (/^chreeg_run\d+$/.test(key)) { runsTotal++; if (String(val).trim() === '1') runsCompleted++; }
+                }
+                if (runsTotal > 0) summary['runs'] = `${runsCompleted}/${runsTotal}`;
+                if (form['chreeg_cap_size'] != null) summary['cap_size'] = String(form['chreeg_cap_size']).trim();
+                if (form['chreeg_head_cir'] != null) summary['head_cir'] = String(form['chreeg_head_cir']).trim();
+                if (form['chrav_nsi_upload'] != null) summary['nsi_upload'] = String(form['chrav_nsi_upload']).trim();
+                if (form['chrav_psychs_upload'] != null) summary['psychs_upload'] = String(form['chrav_psychs_upload']).trim();
+                return summary;
+            };
+
+            const seenFormNames = new Set<string>();
+            for (const row of runSheetsSettled.value.rows as RunSheetRow[]) {
+                seenFormNames.add(row.form_name);
+                if (!runSheetsBySubject.has(row.subject_id)) runSheetsBySubject.set(row.subject_id, []);
+                const consentDate = consentDateBySubject.get(row.subject_id) ?? null;
+                let dayOffset: number | null = null;
+                let completionDate: string | null = null;
+                const formTimestamp = extractFormTimestamp(row.form_data, row.form_name);
+                if (formTimestamp && consentDate) {
+                    completionDate = formTimestamp;
+                    try {
+                        dayOffset = Math.floor(
+                            (new Date(formTimestamp).getTime() - new Date(consentDate).getTime()) / (1000 * 60 * 60 * 24)
+                        );
+                    } catch { /* keep null */ }
+                }
+                runSheetsBySubject.get(row.subject_id)!.push({
+                    form_name: row.form_name,
+                    form_instance_number: row.form_instance_number,
+                    redcap_event_name: row.redcap_event_name,
+                    has_data: Boolean(row.has_data),
+                    completion_date: completionDate,
+                    day_offset: dayOffset,
+                    form_data_summary: extractRunSheetFieldSummary(row.form_data, row.form_name),
+                });
             }
-        } catch {
-            // formsdb unavailable — continue without run sheet data
+            runSheetForms = [...seenFormNames].sort();
         }
 
-        // ── 5. Build run_sheet_form_to_modality map ───────────────────────────
-        const runSheetFormToModality: Record<string, string> = {};
-        for (const form of runSheetForms) {
-            const modality = formNameToModality(form);
-            if (modality) runSheetFormToModality[form] = modality;
-        }
-
-        // ── 5b. Query Day 1a Pre-dose dates from data_pulls ──────────────────
-        const day1aDatesBySubject = new Map<string, string>();
-        try {
-            if (dataPullTable && hasPullMetadataColumn) {
-                const day1aQuery = `
-                    SELECT
-                        s.subject_id,
-                        MIN((dp.pull_timestamp::date)::text) AS day1a_date
-                    FROM ${quoteIdentifier(dataPullTable)} dp
-                    JOIN public.subjects s ON s.subject_id = dp.subject_id
-                    JOIN public.sites si ON si.site_id = s.site_id
-                    WHERE si.project_id = $1
-                      AND dp.pull_metadata->>'event_name' ILIKE '%day_1a%predose%'
-                    GROUP BY s.subject_id
-                `;
-                const day1aResult = await connection.query(day1aQuery, [projectId]);
-                for (const row of day1aResult.rows as { subject_id: string; day1a_date: string }[]) {
-                    day1aDatesBySubject.set(row.subject_id, row.day1a_date);
-                }
-            }
-        } catch {
-            // If Day 1a query fails, continue without Day 1a dates
-        }
-
-        // ── 5c. Query SharePoint form submission dates (response.submitted.json) ──
-        // sharepoint.sharepoint_forms stores one row per subject+REDCap event.
-        // form_data->>'event_date' is the actual EEG (or other modality) scan date
-        // recorded in the submitted SharePoint form. We compare this against the
-        // run sheet session_date (*_interview_date) to detect date mismatches.
-        try {
-            if (!formsDbAvailable || !formsConn) {
-                throw new Error("formsdb unavailable");
-            }
-            const spFormResult = await queryWithTimeout(formsConn.query(
-                `SELECT subject_id,
-                        (form_data->>'event_date')::date::text AS event_date
-                 FROM sharepoint.sharepoint_forms
-                 WHERE subject_id = ANY($1::text[])
-                   AND form_data->>'event_date' IS NOT NULL`,
-                [subjectIds]
-            ), 5000);
-            // Build lookup: subject_id → sorted list of SP form event_dates
+        // ── Process SharePoint form dates and attach nearest to each run sheet ──
+        if (spFormSettled.status === "fulfilled") {
             const spDatesBySubject = new Map<string, string[]>();
-            for (const row of spFormResult.rows as { subject_id: string; event_date: string }[]) {
+            for (const row of spFormSettled.value.rows as { subject_id: string; event_date: string }[]) {
                 if (!spDatesBySubject.has(row.subject_id)) spDatesBySubject.set(row.subject_id, []);
                 spDatesBySubject.get(row.subject_id)!.push(row.event_date);
             }
-            // For each run sheet, find the nearest SP form date for that subject and attach it.
-            // This lets the frontend show the SP form date and flag mismatches.
             for (const [subjectId, runSheets] of runSheetsBySubject) {
                 const spDates = spDatesBySubject.get(subjectId) ?? [];
                 if (spDates.length === 0) continue;
                 for (const rs of runSheets) {
                     const sessionDate = rs.form_data_summary?.["session_date"] ?? null;
                     if (!sessionDate) continue;
-                    // Find the nearest SP form date
                     let nearest: string | null = null;
                     let nearestDiff = Infinity;
                     for (const spDate of spDates) {
                         try {
                             const diff = Math.abs(new Date(spDate).getTime() - new Date(sessionDate).getTime()) / (1000 * 60 * 60 * 24);
                             if (diff < nearestDiff) { nearestDiff = diff; nearest = spDate; }
-                        } catch { /* ignore parse errors */ }
+                        } catch { /* ignore */ }
                     }
-                    if (nearest !== null) {
-                        rs.form_data_summary = { ...(rs.form_data_summary ?? {}), sp_event_date: nearest };
-                    }
+                    if (nearest !== null) rs.form_data_summary = { ...(rs.form_data_summary ?? {}), sp_event_date: nearest };
                 }
             }
-        } catch {
-            // sharepoint.sharepoint_forms unavailable — continue without SP form dates
         }
 
-        // ── 6. Assemble per-subject payload ───────────────────────────────────
-        const subjects: SharePointSubject[] = consentSubjects.map((row) => ({
-            subject_id: row.subject_id,
-            site_id: row.site_id,
-            consent_date: row.consent_date,
-            is_consented: row.is_consented,
-            is_screen_failed: statusFlagsBySubject.get(row.subject_id)?.is_screen_failed ?? false,
-            is_withdrawn: statusFlagsBySubject.get(row.subject_id)?.is_withdrawn ?? false,
-            screen_fail_reason: statusFlagsBySubject.get(row.subject_id)?.screen_fail_reason ?? null,
+        // ── Process Day 1a pre-dose dates ─────────────────────────────────────
+        const day1aDatesBySubject = new Map<string, string>();
+        if (day1aSettled.status === "fulfilled") {
+            for (const row of day1aSettled.value.rows as { subject_id: string; day1a_date: string }[]) {
+                day1aDatesBySubject.set(row.subject_id, row.day1a_date);
+            }
+        }
+
+        // ── Build run_sheet_form_to_modality map ──────────────────────────────
+        const runSheetFormToModality: Record<string, string> = {};
+        for (const form of runSheetForms) {
+            const modality = formNameToModality(form);
+            if (modality) runSheetFormToModality[form] = modality;
+        }
             screen_fail_comments: statusFlagsBySubject.get(row.subject_id)?.screen_fail_comments ?? null,
             day1a_predose_date: day1aDatesBySubject.get(row.subject_id) ?? null,
             days: daysBySubject.get(row.subject_id) ?? [],
