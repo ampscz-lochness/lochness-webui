@@ -57,6 +57,17 @@ export default function Home() {
                             </p>
                         </div>
                     </Link>
+
+                    <Link href="/monitoring/server-uptime">
+                        <div className="h-full border border-l-4 border-l-violet-500 rounded-lg p-4 hover:shadow-md transition-shadow bg-violet-50/30 dark:bg-slate-700/50 dark:border-violet-500">
+                            <h3 className="text-xl mb-2 font-bold text-gray-700 dark:text-gray-300">
+                                🖥️ Server Uptime
+                            </h3>
+                            <p className="text-base">
+                                View database server uptime and a history of recent restarts, with highlights for reboots in the past 7 days.
+                            </p>
+                        </div>
+                    </Link>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">

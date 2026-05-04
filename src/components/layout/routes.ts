@@ -32,6 +32,11 @@ export const navData = {
                     url: "/monitoring/sharepoint",
                     isActive: false,
                 },
+                {
+                    title: "Server Uptime",
+                    url: "/monitoring/server-uptime",
+                    isActive: false,
+                },
             ],
         },
         {
