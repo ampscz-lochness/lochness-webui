@@ -37,6 +37,12 @@ type RunSheetRow = {
     consent_date: string | null;
 };
 
+type DataSourceRequirementRow = {
+    data_source_name: string;
+    data_source_type: string | null;
+    data_source_metadata: Record<string, unknown> | null;
+};
+
 // ── Column detection helpers ──────────────────────────────────────────────────
 
 async function getColumns(tableName: TableName): Promise<Set<string>> {
@@ -79,6 +85,101 @@ function parseCount(value: string | number | null | undefined): number {
     if (!value) return 0;
     const parsed = parseInt(value, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+async function queryWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(`Query timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+
+        promise
+            .then((value) => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch((error) => {
+                clearTimeout(timer);
+                reject(error);
+            });
+    });
+}
+
+function parseBooleanLike(value: unknown): boolean | null {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["1", "true", "yes", "y", "required"].includes(normalized)) return true;
+        if (["0", "false", "no", "n", "optional", "not_required", "not required"].includes(normalized)) return false;
+    }
+    return null;
+}
+
+function getValueAtPath(input: unknown, path: string): unknown {
+    let current: unknown = input;
+    for (const key of path.split(".")) {
+        if (!current || typeof current !== "object") return null;
+        current = (current as Record<string, unknown>)[key];
+    }
+    return current;
+}
+
+function extractJsonRequiredFromMetadata(metadata: Record<string, unknown> | null): boolean | null {
+    if (!metadata) return null;
+
+    const directKeys = [
+        "json_required",
+        "require_json",
+        "requires_json",
+        "json_file_required",
+        "requires_json_file",
+        "expect_json",
+        "expects_json",
+    ];
+
+    for (const key of directKeys) {
+        const parsed = parseBooleanLike(getValueAtPath(metadata, key));
+        if (parsed !== null) return parsed;
+    }
+
+    const nestedKeys = [
+        "sharepoint.json_required",
+        "sharepoint.require_json",
+        "sharepoint.requires_json",
+        "qc.json_required",
+        "qc.require_json",
+    ];
+
+    for (const path of nestedKeys) {
+        const parsed = parseBooleanLike(getValueAtPath(metadata, path));
+        if (parsed !== null) return parsed;
+    }
+
+    const inverseKeys = [
+        "json_not_required",
+        "json_optional",
+        "skip_json",
+        "without_form",
+        "potential_file_uploads_without_form_update",
+    ];
+    for (const key of inverseKeys) {
+        const parsed = parseBooleanLike(getValueAtPath(metadata, key));
+        if (parsed !== null) return !parsed;
+    }
+
+    return null;
+}
+
+function mergeJsonRequirement(existing: boolean | null, next: boolean | null): boolean | null {
+    if (next === null) return existing;
+    if (existing === null) return next;
+    if (existing === false || next === false) return false;
+    if (existing === true || next === true) return true;
+    return null;
 }
 
 // ── SharePoint-only modality CASE statement ───────────────────────────────────
@@ -142,6 +243,45 @@ export class SharePointTrackerModelError extends Error {
 export class SharePointTracker {
     static async getProjectSharePointTracker(projectId: string): Promise<SharePointPayload> {
         const connection = getConnection();
+        let formsConn: ReturnType<typeof getFormsConnection> | null = null;
+        let formsDbAvailable = false;
+
+        try {
+            formsConn = getFormsConnection();
+            await queryWithTimeout(formsConn.query("SELECT 1"), 1500);
+            formsDbAvailable = true;
+        } catch {
+            formsDbAvailable = false;
+        }
+
+        const jsonRequiredByModality: Record<string, boolean | null> = {
+            eeg_sharepoint: null,
+            mindlamp_qc_sharepoint: null,
+            transcript_sharepoint: null,
+        };
+
+        try {
+            const sourceRequirementResult = await connection.query(
+                `SELECT data_source_name, data_source_type, data_source_metadata
+                 FROM public.data_sources
+                 WHERE project_id = $1
+                   AND COALESCE(data_source_is_active, true) = true`,
+                [projectId]
+            );
+
+            for (const row of sourceRequirementResult.rows as DataSourceRequirementRow[]) {
+                const sourceLabel = `${row.data_source_name ?? ""} ${row.data_source_type ?? ""}`;
+                const modality = formNameToModality(sourceLabel);
+                if (!modality) continue;
+                const jsonRequired = extractJsonRequiredFromMetadata(row.data_source_metadata);
+                jsonRequiredByModality[modality] = mergeJsonRequirement(
+                    jsonRequiredByModality[modality] ?? null,
+                    jsonRequired
+                );
+            }
+        } catch {
+            // data_sources metadata is optional for this view; fallback to null requirements
+        }
 
         const dataPullTable = await getFirstExistingTable(["data_pulls", "data_pull"]);
 
@@ -191,6 +331,8 @@ export class SharePointTracker {
                 (COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = '') AS is_consented
              FROM public.subjects
              WHERE project_id = $1
+               AND COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = ''
+                             AND NULLIF(subject_metadata->>'consent_date', '') IS NOT NULL
              ORDER BY site_id, subject_id`,
             [projectId]
         );
@@ -207,10 +349,15 @@ export class SharePointTracker {
                 screen_fail_comments: string | null;
             }
         >();
-        try {
-            statusFlagsBySubject = await getStatusFlagsBySubject(projectId, subjectIds);
-        } catch {
-            // formsdb is intentionally isolated; keep tracker functional if unavailable
+        if (formsDbAvailable) {
+            try {
+                statusFlagsBySubject = await queryWithTimeout(
+                    getStatusFlagsBySubject(projectId, subjectIds),
+                    3000
+                );
+            } catch {
+                // formsdb is intentionally isolated; keep tracker functional if unavailable
+            }
         }
 
         const emptyPayload: SharePointPayload = {
@@ -233,6 +380,7 @@ export class SharePointTracker {
             metadata: {
                 data_pulls_available: false,
                 file_md5_available: hasFileMd5Column,
+                json_required_by_modality: jsonRequiredByModality,
                 day_offset_range: null,
             },
         };
@@ -389,15 +537,18 @@ export class SharePointTracker {
         const runSheetsBySubject = new Map<string, RunSheetRecord[]>();
 
         try {
-            const formsConn = getFormsConnection();
+            if (!formsDbAvailable || !formsConn) {
+                throw new Error("formsdb unavailable");
+            }
 
             // Discover forms with SharePoint-relevant names for this project's subjects
-            const discoverResult = await formsConn.query(
+            const discoverResult = await queryWithTimeout(formsConn.query(
                 `SELECT DISTINCT rf.form_name
                  FROM forms.redcap_forms rf
                  JOIN public.subjects s ON s.subject_id = rf.subject_id
                  JOIN public.sites si ON si.site_id = s.site_id
                  WHERE si.project_id = $1
+                   AND rf.subject_id = ANY($2::text[])
                    AND (
                        LOWER(rf.form_name) LIKE '%eeg%'
                     OR LOWER(rf.form_name) LIKE '%transcript%'
@@ -407,17 +558,17 @@ export class SharePointTracker {
                     OR LOWER(rf.form_name) LIKE '%sharepoint%'
                    )
                  ORDER BY rf.form_name`,
-                [projectId]
-            );
+                [projectId, subjectIds]
+            ), 5000);
             runSheetForms = (discoverResult.rows as { form_name: string }[]).map((r) => r.form_name);
 
             if (runSheetForms.length > 0) {
-                const recordsResult = await formsConn.query(
+                const recordsResult = await queryWithTimeout(formsConn.query(
                     `SELECT
                          rf.subject_id,
                          rf.form_name,
                          rf.form_instance_number,
-                         rf.form_data->>'redcap_event_name' AS redcap_event_name,
+                         rf.form_event_name AS redcap_event_name,
                          rf.form_data,
                          NULLIF(subject_metadata->>'consent_date', '')::text AS consent_date,
                          (
@@ -457,10 +608,11 @@ export class SharePointTracker {
                      JOIN public.subjects s ON s.subject_id = rf.subject_id
                      JOIN public.sites si ON si.site_id = s.site_id
                      WHERE si.project_id = $1
-                       AND rf.form_name = ANY($2::text[])
+                                             AND rf.subject_id = ANY($2::text[])
+                                             AND rf.form_name = ANY($3::text[])
                      ORDER BY rf.subject_id, rf.form_name, COALESCE(rf.form_instance_number, 0)`,
-                    [projectId, runSheetForms]
-                );
+                                        [projectId, subjectIds, runSheetForms]
+                                ), 7000);
 
                 // Helper to extract session date from form_data.
                 // Priority: *_interview_date (used by all known run sheet forms), then *_timestamp.
@@ -692,15 +844,17 @@ export class SharePointTracker {
         // recorded in the submitted SharePoint form. We compare this against the
         // run sheet session_date (*_interview_date) to detect date mismatches.
         try {
-            const formsConn = getFormsConnection();
-            const spFormResult = await formsConn.query(
+            if (!formsDbAvailable || !formsConn) {
+                throw new Error("formsdb unavailable");
+            }
+            const spFormResult = await queryWithTimeout(formsConn.query(
                 `SELECT subject_id,
                         (form_data->>'event_date')::date::text AS event_date
                  FROM sharepoint.sharepoint_forms
                  WHERE subject_id = ANY($1::text[])
                    AND form_data->>'event_date' IS NOT NULL`,
                 [subjectIds]
-            );
+            ), 5000);
             // Build lookup: subject_id → sorted list of SP form event_dates
             const spDatesBySubject = new Map<string, string[]>();
             for (const row of spFormResult.rows as { subject_id: string; event_date: string }[]) {
@@ -773,6 +927,7 @@ export class SharePointTracker {
             metadata: {
                 data_pulls_available: true,
                 file_md5_available: hasFileMd5Column,
+                json_required_by_modality: jsonRequiredByModality,
                 day_offset_range:
                     minOffset !== null && maxOffset !== null
                         ? { min: minOffset, max: maxOffset }

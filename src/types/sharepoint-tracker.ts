@@ -67,6 +67,8 @@ export type SharePointPayload = {
     metadata: {
         data_pulls_available: boolean;
         file_md5_available: boolean;
+        /** Source-configured JSON requirement per modality; null when not explicitly configured */
+        json_required_by_modality: Record<string, boolean | null>;
         day_offset_range: { min: number; max: number } | null;
     };
 };

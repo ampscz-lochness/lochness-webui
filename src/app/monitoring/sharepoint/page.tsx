@@ -106,11 +106,15 @@ function getModalityStatus(
     subject: SharePointPayload["subjects"][number],
     modalityKey: string,
     runSheetFormToModality: Record<string, string>,
-    runSheetForms: string[]
+    runSheetForms: string[],
+    jsonRequiredByModality: Record<string, boolean | null>
 ) {
-    const hasJson = subject.days.some(
+    const jsonRequired = jsonRequiredByModality[modalityKey] !== false;
+
+    const hasJsonRaw = subject.days.some(
         (d) => d.modality_key === modalityKey && d.file_type === "json"
     );
+    const hasJson = jsonRequired ? hasJsonRaw : null;
     const hasActual = subject.days.some(
         (d) => d.modality_key === modalityKey && d.file_type === "actual"
     );
@@ -126,19 +130,19 @@ function getModalityStatus(
           )
         : null; // null = N/A (no form discovered)
 
-    return { hasJson, hasActual, hasRunSheet, runSheetExpected };
+    return { hasJson, hasActual, hasRunSheet, runSheetExpected, jsonRequired };
 }
 
 // ── Status icon ───────────────────────────────────────────────────────────────
 
-function StatusIcon({ value, label }: { value: boolean | null; label: string }) {
+function StatusIcon({ value, label, nullHint }: { value: boolean | null; label: string; nullHint?: string }) {
     if (value === null) {
         return (
             <Tooltip>
                 <TooltipTrigger asChild>
                     <span className="inline-flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold bg-muted text-muted-foreground select-none">—</span>
                 </TooltipTrigger>
-                <TooltipContent>{label}: no form discovered for this modality</TooltipContent>
+                <TooltipContent>{nullHint ?? `${label}: no form discovered for this modality`}</TooltipContent>
             </Tooltip>
         );
     }
@@ -317,8 +321,8 @@ export default function SharePointTrackerPage() {
             if (subject.is_screen_failed) return false; // screen-failed not expected to complete
             for (const m of SHAREPOINT_MODALITIES) {
                 if (!data.modality_keys.includes(m.key)) continue;
-                const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms);
-                if (!s.hasJson || !s.hasActual) return true;
+                const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms, data.metadata.json_required_by_modality ?? {});
+                if ((s.jsonRequired && !s.hasJson) || !s.hasActual) return true;
                 if (s.runSheetExpected && !s.hasRunSheet) return true;
             }
             return false;
@@ -615,8 +619,8 @@ export default function SharePointTrackerPage() {
                                                 const isExpanded = expandedSubjectId === subject.subject_id;
                                                 // Determine if any modality is incomplete for this subject
                                                 const isIncomplete = !subject.is_screen_failed && visibleModalities.some((m) => {
-                                                    const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms);
-                                                    return !s.hasJson || !s.hasActual || (s.runSheetExpected && !s.hasRunSheet);
+                                                    const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms, data.metadata.json_required_by_modality ?? {});
+                                                    return (s.jsonRequired && !s.hasJson) || !s.hasActual || (s.runSheetExpected && !s.hasRunSheet);
                                                 });
                                                 const colSpan = visibleModalities.length * 3 + 1;
 
@@ -637,11 +641,15 @@ export default function SharePointTrackerPage() {
                                                                 </span>
                                                             </td>
                                                             {visibleModalities.map((m) => {
-                                                                const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms);
+                                                                const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms, data.metadata.json_required_by_modality ?? {});
                                                                 return (
                                                                     <React.Fragment key={m.key}>
                                                                         <td className="border border-border px-1 py-1 text-center">
-                                                                            <StatusIcon value={s.hasJson} label="JSON file" />
+                                                                            <StatusIcon
+                                                                                value={s.hasJson}
+                                                                                label="JSON file"
+                                                                                nullHint={s.jsonRequired ? undefined : "JSON file: not required by source configuration"}
+                                                                            />
                                                                         </td>
                                                                         <td className="border border-border px-1 py-1 text-center">
                                                                             <StatusIcon value={s.hasActual} label="Actual file" />
@@ -737,8 +745,17 @@ export default function SharePointTrackerPage() {
                                                                                 <thead>
                                                                                     <tr>
                                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Form</th>
-                                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Instance</th>
                                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">REDCap Event</th>
+                                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">
+                                                                                            <Tooltip>
+                                                                                                <TooltipTrigger asChild>
+                                                                                                    <span className="cursor-help border-b border-dotted">Instance #</span>
+                                                                                                </TooltipTrigger>
+                                                                                                <TooltipContent>
+                                                                                                    <p className="max-w-xs text-xs">REDCap repeating instrument instance number. <strong>—</strong> means the form is non-repeating — one row per event arm is expected.</p>
+                                                                                                </TooltipContent>
+                                                                                            </Tooltip>
+                                                                                        </th>
                                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">
                                                                                             <Tooltip>
                                                                                                 <TooltipTrigger asChild>
@@ -857,8 +874,8 @@ export default function SharePointTrackerPage() {
                                                                                             return (
                                                                                                 <tr key={idx} className={`hover:bg-muted/30 ${rowBgColor}`}>
                                                                                                     <td className="border border-border px-2 py-1 font-mono text-[10px]">{rs.form_name}</td>
-                                                                                                    <td className="border border-border px-2 py-1 text-muted-foreground">{rs.form_instance_number ?? "—"}</td>
                                                                                                     <td className="border border-border px-2 py-1">{rs.redcap_event_name ?? "—"}</td>
+                                                                                                    <td className="border border-border px-2 py-1 text-muted-foreground">{rs.form_instance_number ?? "—"}</td>
                                                                                                     <td className="border border-border px-2 py-1 whitespace-nowrap">
                                                                                                         {(() => { const d = summary['session_date'] || rs.completion_date; return d ? (
                                                                                                             <Tooltip>
@@ -1224,8 +1241,17 @@ export default function SharePointTrackerPage() {
                                                                 <thead>
                                                                     <tr>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Form</th>
-                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Instance</th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">REDCap Event</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <span className="cursor-help border-b border-dotted">Instance #</span>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent>
+                                                                                    <p className="max-w-xs text-xs">REDCap repeating instrument instance number. <strong>—</strong> means the form is non-repeating — one row per event arm is expected.</p>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        </th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">
                                                                             <Tooltip>
                                                                                 <TooltipTrigger asChild>
@@ -1341,8 +1367,8 @@ export default function SharePointTrackerPage() {
                                                                             return (
                                                                                 <tr key={idx} className={`hover:bg-muted/30 ${rowBgColor}`}>
                                                                                     <td className="border border-border px-2 py-1 font-mono text-[10px]">{rs.form_name}</td>
-                                                                                    <td className="border border-border px-2 py-1 text-muted-foreground">{rs.form_instance_number ?? "—"}</td>
                                                                                     <td className="border border-border px-2 py-1">{rs.redcap_event_name ?? "—"}</td>
+                                                                                    <td className="border border-border px-2 py-1 text-muted-foreground">{rs.form_instance_number ?? "—"}</td>
                                                                                     <td className="border border-border px-2 py-1 whitespace-nowrap">
                                                                                         {(() => { const d = summary['session_date'] || rs.completion_date; return d ? (
                                                                                             <Tooltip>
