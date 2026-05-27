@@ -13,14 +13,18 @@ const isPublicPath = (pathname: string): boolean => {
 };
 
 const hasValidSession = async (request: NextRequest): Promise<boolean> => {
-    const sessionUrl = new URL("/api/auth/get-session", request.url);
+    const internalBaseUrl = process.env.AUTH_INTERNAL_URL ?? request.nextUrl.origin;
+    const sessionUrl = new URL("/api/auth/get-session", internalBaseUrl);
     const cookie = request.headers.get("cookie") ?? "";
 
     try {
         const response = await fetch(sessionUrl, {
             method: "GET",
             headers: {
-                cookie,
+               cookie,
+               host: request.headers.get("host") ?? "",
+               "x-forwarded-proto": request.headers.get("x-forwarded-proto") ?? "https",
+               "x-forwarded-host": request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "",
             },
             cache: "no-store",
         });
