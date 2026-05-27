@@ -145,6 +145,8 @@ type TimelinePoint = {
     modality_key: string;
     unique_file_count: number;
     file_paths: string[];
+    penncnb_test_date?: string | null;
+    penncnb_test_date_source?: string | null;
 };
 
 type HoverTooltipState = {
@@ -339,6 +341,8 @@ export default function DayTrackerPage() {
                     modality_key: day.modality_key,
                     unique_file_count: day.unique_file_count,
                     file_paths: day.file_paths,
+                    penncnb_test_date: day.penncnb_test_date ?? null,
+                    penncnb_test_date_source: day.penncnb_test_date_source ?? null,
                 });
             }
             map.set(subject.subject_id, { day1aDate, points });
@@ -868,6 +872,25 @@ export default function DayTrackerPage() {
                                             const visibleDays = (timeline?.points ?? []).filter(
                                                 (d) => activeModalityTab === "all" || d.modality_key === activeModalityTab
                                             );
+                                            const plottedDays = [...visibleDays].sort((a, b) => {
+                                                if (a.day_offset_from_day1a !== b.day_offset_from_day1a) {
+                                                    return a.day_offset_from_day1a - b.day_offset_from_day1a;
+                                                }
+                                                if (a.modality_key !== b.modality_key) {
+                                                    return a.modality_key.localeCompare(b.modality_key);
+                                                }
+                                                return a.calendar_date.localeCompare(b.calendar_date);
+                                            });
+
+                                            // In 24 h mode, multiple modalities often share the same day offset.
+                                            // Build deterministic overlap buckets so bars can be fanned out and remain visible.
+                                            const overlapCountsByOffset = new Map<number, number>();
+                                            for (const day of plottedDays) {
+                                                overlapCountsByOffset.set(
+                                                    day.day_offset_from_day1a,
+                                                    (overlapCountsByOffset.get(day.day_offset_from_day1a) ?? 0) + 1
+                                                );
+                                            }
                                             if (showLast24h && visibleDays.length === 0) return null;
 
                                             const screenFailBadge = getScreenFailBadge(subject.screen_fail_reason, subject.screen_fail_comments);
@@ -1004,28 +1027,59 @@ export default function DayTrackerPage() {
                                                                 ) : null;
                                                                 return <>{day1aLines}{consentLine}</>;
                                                             })()}
-                                                            {visibleDays.map((day) => {
+                                                            {(() => {
+                                                                const overlapCursorByOffset = new Map<number, number>();
+                                                                return plottedDays.map((day, dayIdx) => {
                                                                 const xLeft = toXPercent(day.day_offset_from_day1a);
                                                                 const barW = Math.max(0.5, (1 / rangeSpan) * 100);
                                                                 const hPct = Math.max(20, (day.unique_file_count / maxBucketTotal) * 100);
                                                                 const color = MODALITY_COLOR_BY_KEY[day.modality_key as CoverageModalityKey] ?? "#10b981";
+                                                                const overlapCount = overlapCountsByOffset.get(day.day_offset_from_day1a) ?? 1;
+                                                                const overlapSlot = overlapCursorByOffset.get(day.day_offset_from_day1a) ?? 0;
+                                                                overlapCursorByOffset.set(day.day_offset_from_day1a, overlapSlot + 1);
+                                                                const centeredSlot = overlapSlot - (overlapCount - 1) / 2;
+                                                                const jitterPercent = showLast24h && overlapCount > 1 ? centeredSlot * 0.45 : 0;
+                                                                const leftPercent = Math.max(0, Math.min(100, xLeft + jitterPercent));
                                                                 const tipLines = [
                                                                     `Day ${day.day_offset_from_day1a >= 0 ? "+" : ""}${day.day_offset_from_day1a} (${asReadableDate(day.calendar_date)})`,
                                                                     `${day.modality_key}: ${day.unique_file_count} file${day.unique_file_count === 1 ? "" : "s"}`,
+                                                                    ...(showLast24h && overlapCount > 1
+                                                                        ? [`Overlap at this day: ${overlapSlot + 1} of ${overlapCount}`]
+                                                                        : []),
+                                                                    ...(day.modality_key === "penncnb"
+                                                                        ? [
+                                                                            `Penn CNB test date: ${day.penncnb_test_date ? asReadableDate(day.penncnb_test_date) : "Unavailable"}`,
+                                                                            ...(day.penncnb_test_date_source
+                                                                                ? [`UPENN JSON field: ${day.penncnb_test_date_source}`]
+                                                                                : []),
+                                                                        ]
+                                                                        : []),
                                                                     ...(day.file_paths.length > 0 ? ["", ...day.file_paths.slice(0, 3).map(asFileName)] : []),
                                                                 ];
                                                                 return (
                                                                     <div
-                                                                        key={`${day.modality_key}-${day.day_offset_from_day1a}`}
+                                                                        key={`${day.modality_key}-${day.day_offset_from_day1a}-${day.calendar_date}-${dayIdx}`}
                                                                         className="absolute bottom-0 overflow-hidden rounded-sm"
-                                                                        style={{ left: `${xLeft}%`, width: `${barW}%`, height: `${hPct}%`, minWidth: "3px", backgroundColor: color }}
+                                                                        style={{
+                                                                            left: `${leftPercent}%`,
+                                                                            width: `${barW}%`,
+                                                                            height: `${hPct}%`,
+                                                                            minWidth: "3px",
+                                                                            backgroundColor: color,
+                                                                            opacity: showLast24h && overlapCount > 1 ? 0.72 : 1,
+                                                                            zIndex: overlapCount > 1 ? overlapSlot + 1 : 1,
+                                                                            boxShadow: showLast24h && overlapCount > 1
+                                                                                ? "0 0 0 1px rgba(255,255,255,0.65)"
+                                                                                : "none",
+                                                                        }}
                                                                         onMouseEnter={(e) => { e.stopPropagation(); showTooltip(e, tipLines); }}
                                                                         onMouseMove={(e) => { e.stopPropagation(); showTooltip(e, tipLines); }}
                                                                         onMouseLeave={hideTooltip}
                                                                         onClick={(e) => e.stopPropagation()}
                                                                     />
                                                                 );
-                                                            })}
+                                                                });
+                                                            })()}
                                                         </div>
                                                     )}
                                                     {/* Expanded detail: sorted file listing */}
@@ -1034,7 +1088,8 @@ export default function DayTrackerPage() {
                                                             <table className="w-full border-collapse text-[11px]">
                                                                 <thead>
                                                                     <tr>
-                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Date</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Data Pull Date</th>
+                                                                        <th className="border border-border bg-muted px-2 py-1 text-left">Penn CNB Test Date (UPENN JSON)</th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Day from 1a</th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Modality</th>
                                                                         <th className="border border-border bg-muted px-2 py-1 text-left">Files</th>
@@ -1047,6 +1102,26 @@ export default function DayTrackerPage() {
                                                                         .map((day, idx) => (
                                                                             <tr key={idx} className="hover:bg-muted/30">
                                                                                 <td className="border border-border px-2 py-1 whitespace-nowrap">{asReadableDate(day.calendar_date)}</td>
+                                                                                <td className="border border-border px-2 py-1 whitespace-nowrap">
+                                                                                    {day.modality_key === "penncnb" ? (
+                                                                                        day.penncnb_test_date ? (
+                                                                                            <Tooltip>
+                                                                                                <TooltipTrigger asChild>
+                                                                                                    <span className="underline decoration-dotted underline-offset-2">{asReadableDate(day.penncnb_test_date)}</span>
+                                                                                                </TooltipTrigger>
+                                                                                                <TooltipContent>
+                                                                                                    {day.penncnb_test_date_source
+                                                                                                        ? `Extracted from UPENN JSON field: ${day.penncnb_test_date_source}`
+                                                                                                        : "Extracted from UPENN JSON content"}
+                                                                                                </TooltipContent>
+                                                                                            </Tooltip>
+                                                                                        ) : (
+                                                                                            <span className="text-muted-foreground">Unavailable</span>
+                                                                                        )
+                                                                                    ) : (
+                                                                                        <span className="text-muted-foreground">—</span>
+                                                                                    )}
+                                                                                </td>
                                                                                 <td className="border border-border px-2 py-1 whitespace-nowrap">{day.day_offset_from_day1a >= 0 ? "+" : ""}{day.day_offset_from_day1a}</td>
                                                                                 <td className="border border-border px-2 py-1">
                                                                                     <span className="inline-flex items-center gap-1">
