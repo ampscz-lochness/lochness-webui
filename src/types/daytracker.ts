@@ -6,6 +6,10 @@ export type DayTrackerActivityRow = {
     modality_key: string;
     unique_file_count: number;
     file_paths: string[];
+    /** Extracted from UPENN JSON payload when modality_key is penncnb */
+    penncnb_test_date?: string | null;
+    /** JSON key path used for penncnb_test_date extraction */
+    penncnb_test_date_source?: string | null;
 };
 
 // ── REDCap event-based activity ───────────────────────────────────────────────
