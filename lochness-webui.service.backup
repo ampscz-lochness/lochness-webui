@@ -1,0 +1,21 @@
+[Unit]
+Description=Lochness WebUI Next.js App
+After=network.target
+
+[Service]
+Type=simple
+User=kc244
+Group=bwh-predict-g
+WorkingDirectory=/opt/software/lochness-webui
+
+Environment=NODE_ENV=production
+Environment=HOME=/home/kc244
+Environment=PATH=/home/kc244/.nvm/versions/node/v24.14.0/bin:/usr/local/bin:/usr/bin:/bin
+
+ExecStart=/bin/bash -lc 'npm run start'
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

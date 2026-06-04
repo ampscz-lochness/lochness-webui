@@ -6,6 +6,8 @@ type SubjectRow = {
     subject_id: string;
     site_id: string;
     created_at: string | null;
+    mindlamp_id: string | null;
+    cantab_id: string | null;
 };
 
 type ConsentDateRow = {
@@ -70,9 +72,22 @@ export type MonitoringPayload = {
     project_id: string;
     summary: {
         subjects_missing_required_variables_count: number;
-        subjects_missing_required_variables_by_site: Array<{ site_id: string; count: number; subject_ids: string[] }>;
+        subjects_missing_required_variables_by_site: Array<{
+            site_id: string;
+            count: number;
+            subject_ids: string[];
+            mindlamp_ids: string[];
+            cantab_ids: string[];
+        }>;
         newly_added_last_night_count: number;
     };
+    subjects_with_consent_date: Array<{
+        subject_id: string;
+        site_id: string;
+        consent_date: string | null;
+        mindlamp_id: string | null;
+        cantab_id: string | null;
+    }>;
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
     consent_dates_by_subject: Array<{ subject_id: string; consent_date: string | null }>;
     unique_file_paths_by_data_source: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }>;
@@ -256,7 +271,25 @@ export class Monitoring {
             SELECT
                 subject_id,
                 site_id,
-                ${subjectCreatedAtExpression} AS created_at
+                ${subjectCreatedAtExpression} AS created_at,
+                COALESCE(
+                    NULLIF(subject_metadata->>'mindlamp_id', ''),
+                    NULLIF(subject_metadata->>'mindlamp_subject_id', ''),
+                    NULLIF(subject_metadata->>'mindlamp_user_id', '')
+                )::text AS mindlamp_id,
+                COALESCE(
+                    NULLIF(subject_metadata->>'cantab_id', ''),
+                    NULLIF(subject_metadata->>'cantab_subject_id', ''),
+                    NULLIF(subject_metadata->>'cantab_participant_id', ''),
+                    (
+                        SELECT NULLIF(cantab_value->>'cantab_id', '')
+                        FROM jsonb_each(COALESCE(subject_metadata->'cantab', '{}'::jsonb)) AS cantab_entry(cantab_key, cantab_value)
+                        WHERE jsonb_typeof(cantab_value) = 'object'
+                        AND COALESCE(cantab_value->>'cantab_id', '') <> ''
+                        ORDER BY cantab_key
+                        LIMIT 1
+                    )
+                )::text AS cantab_id
             FROM public.subjects
             WHERE project_id = $1
             AND COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = ''
@@ -267,15 +300,26 @@ export class Monitoring {
         const missingSubjects = missingSubjectsResult.rows as SubjectRow[];
 
         const missingSubjectIds = missingSubjects.map((row) => row.subject_id);
-        const siteSubjectMap = missingSubjects.reduce<Record<string, string[]>>((acc, row) => {
+        const siteSubjectMap = missingSubjects.reduce<Record<string, { subject_ids: string[]; mindlamp_ids: Set<string>; cantab_ids: Set<string> }>>((acc, row) => {
             if (!acc[row.site_id]) {
-                acc[row.site_id] = [];
+                acc[row.site_id] = {
+                    subject_ids: [],
+                    mindlamp_ids: new Set<string>(),
+                    cantab_ids: new Set<string>(),
+                };
             }
-            acc[row.site_id].push(row.subject_id);
+
+            acc[row.site_id].subject_ids.push(row.subject_id);
+            if (row.mindlamp_id) {
+                acc[row.site_id].mindlamp_ids.add(row.mindlamp_id);
+            }
+            if (row.cantab_id) {
+                acc[row.site_id].cantab_ids.add(row.cantab_id);
+            }
             return acc;
         }, {});
 
-        const sinceLastNightQuery = `
+        const sinceLast48HoursQuery = `
             SELECT
                 subject_id,
                 site_id,
@@ -283,12 +327,12 @@ export class Monitoring {
             FROM public.subjects
             WHERE project_id = $1
             AND COALESCE(subject_metadata->>'missing_required_variables', 'NOT_EMPTY') = ''
-            AND ${subjectCreatedAtExpression} >= date_trunc('day', now()) - interval '1 day'
-            AND ${subjectCreatedAtExpression} < date_trunc('day', now())
+            AND ${subjectCreatedAtExpression} >= now() - interval '48 hours'
+            AND ${subjectCreatedAtExpression} <= now()
             ORDER BY created_at DESC NULLS LAST
         `;
 
-        const sinceLastNightResult = await connection.query(sinceLastNightQuery, [projectId]);
+        const sinceLast48HoursResult = await connection.query(sinceLast48HoursQuery, [projectId]);
 
         let consentDatesBySubject: Array<{ subject_id: string; consent_date: string | null }> = [];
         if (missingSubjectIds.length > 0) {
@@ -748,18 +792,33 @@ export class Monitoring {
             };
         });
 
+        const consentDateBySubjectMap = new Map(
+            consentDatesBySubject.map((entry) => [entry.subject_id, entry.consent_date])
+        );
+
+        const subjectsWithConsentDate = missingSubjects.map((row) => ({
+            subject_id: row.subject_id,
+            site_id: row.site_id,
+            consent_date: consentDateBySubjectMap.get(row.subject_id) ?? null,
+            mindlamp_id: row.mindlamp_id,
+            cantab_id: row.cantab_id,
+        }));
+
         return {
             project_id: projectId,
             summary: {
                 subjects_missing_required_variables_count: missingSubjectIds.length,
-                subjects_missing_required_variables_by_site: Object.entries(siteSubjectMap).map(([site_id, subject_ids]) => ({
+                subjects_missing_required_variables_by_site: Object.entries(siteSubjectMap).map(([site_id, values]) => ({
                     site_id,
-                    count: subject_ids.length,
-                    subject_ids,
+                    count: values.subject_ids.length,
+                    subject_ids: values.subject_ids,
+                    mindlamp_ids: [...values.mindlamp_ids].sort((a, b) => a.localeCompare(b)),
+                    cantab_ids: [...values.cantab_ids].sort((a, b) => a.localeCompare(b)),
                 })),
-                newly_added_last_night_count: sinceLastNightResult.rows.length,
+                newly_added_last_night_count: sinceLast48HoursResult.rows.length,
             },
-            newly_added_last_night: (sinceLastNightResult.rows as SubjectRow[]).map((row) => ({
+            subjects_with_consent_date: subjectsWithConsentDate,
+            newly_added_last_night: (sinceLast48HoursResult.rows as SubjectRow[]).map((row) => ({
                 subject_id: row.subject_id,
                 site_id: row.site_id,
                 created_at: row.created_at,

@@ -4,21 +4,35 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { ThemeProvider as MuiThemeProvider, createTheme } from "@mui/material/styles";
 import { useTheme } from "next-themes";
 
-import { BarChart3, RefreshCcw, Terminal } from "lucide-react";
+import { BarChart3, FileDown, RefreshCcw, Terminal } from "lucide-react";
 import { toast } from "sonner";
 
 import { Heading } from "@/components/heading";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 type MonitoringResponse = {
     project_id: string;
     summary: {
         subjects_missing_required_variables_count: number;
-        subjects_missing_required_variables_by_site: Array<{ site_id: string; count: number; subject_ids: string[] }>;
+        subjects_missing_required_variables_by_site: Array<{
+            site_id: string;
+            count: number;
+            subject_ids: string[];
+            mindlamp_ids: string[];
+            cantab_ids: string[];
+        }>;
         newly_added_last_night_count: number;
     };
+    subjects_with_consent_date: Array<{
+        subject_id: string;
+        site_id: string;
+        consent_date: string | null;
+        mindlamp_id: string | null;
+        cantab_id: string | null;
+    }>;
     newly_added_last_night: Array<{ subject_id: string; site_id: string; created_at: string | null }>;
     consent_dates_by_subject: Array<{ subject_id: string; consent_date: string | null }>;
     unique_file_paths_by_data_source: Array<{ subject_id: string; data_source_name: string | null; unique_file_paths: number }>;
@@ -133,6 +147,21 @@ const asReadableHour = (value: string | null | undefined): string => {
     });
 };
 
+const getDaysFromConsentDate = (value: string | null | undefined): number | null => {
+    const dateKey = asDateKey(value);
+    if (!dateKey) return null;
+
+    const [year, month, day] = dateKey.split("-").map(Number);
+    if (!year || !month || !day) return null;
+
+    const consentDate = new Date(year, month - 1, day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const millisecondsPerDay = 24 * 60 * 60 * 1000;
+    return Math.floor((today.getTime() - consentDate.getTime()) / millisecondsPerDay);
+};
+
 const normalizeDataSourceName = (value: string | null | undefined): string => {
     if (!value) return "unknown";
     const firstUnderscore = value.indexOf("_");
@@ -174,6 +203,94 @@ type ActivityBucket = {
     segments: TrendSegment[];
 };
 
+type PrintTableColumn = {
+    key: string;
+    label: string;
+    className?: string;
+};
+
+type PrintTableRow = Record<string, React.ReactNode> & { id: string };
+
+type PrintMetricCardRow = {
+    id: string;
+    title: string;
+    subtitle?: string;
+    metrics: Array<{ label: string; value: React.ReactNode }>;
+};
+
+function PrintTable({
+    columns,
+    rows,
+    emptyLabel,
+}: {
+    columns: PrintTableColumn[];
+    rows: PrintTableRow[];
+    emptyLabel: string;
+}) {
+    return (
+        <div className="monitoring-print-only rounded-md border border-slate-300 bg-white p-3">
+            {rows.length === 0 ? (
+                <p className="text-sm text-slate-600">{emptyLabel}</p>
+            ) : (
+                <table className="w-full table-fixed border-collapse text-[11px] leading-4 text-slate-900">
+                    <thead>
+                        <tr>
+                            {columns.map((column) => (
+                                <th
+                                    key={column.key}
+                                    className={`border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold ${column.className ?? ""}`}
+                                >
+                                    {column.label}
+                                </th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows.map((row) => (
+                            <tr key={row.id}>
+                                {columns.map((column) => (
+                                    <td key={column.key} className="border border-slate-300 px-2 py-1 align-top break-words">
+                                        {row[column.key] ?? "N/A"}
+                                    </td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
+        </div>
+    );
+}
+
+function PrintMetricCards({ rows, emptyLabel }: { rows: PrintMetricCardRow[]; emptyLabel: string }) {
+    return (
+        <div className="monitoring-print-only">
+            {rows.length === 0 ? (
+                <div className="rounded-md border border-slate-300 bg-white p-3 text-sm text-slate-600">{emptyLabel}</div>
+            ) : (
+                <div className="grid gap-3">
+                    {rows.map((row) => (
+                        <article key={row.id} className="rounded-md border border-slate-300 bg-white p-3 text-slate-900">
+                            <div className="mb-2 border-b border-slate-200 pb-2">
+                                <h3 className="text-sm font-semibold">{row.title}</h3>
+                                {row.subtitle ? <p className="text-[11px] text-slate-600">{row.subtitle}</p> : null}
+                            </div>
+                            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] leading-4">
+                                {row.metrics.map((metric) => (
+                                    <div key={metric.label} className="break-inside-avoid">
+                                        <dt className="font-medium text-slate-600">{metric.label}</dt>
+                                        <dd className="mt-0.5 break-words">{metric.value}</dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </article>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 const mapDataSourceToCoverageModality = (value: string | null | undefined): CoverageModalityKey | null => {
     const normalized = normalizeDataSourceName(value).toLowerCase();
 
@@ -214,6 +331,62 @@ const TREND_MODALITY_COLOR_BY_KEY: Record<CoverageModalityKey, string> = {
     transcript_sharepoint: "#14b8a6",
 };
 
+const MODALITY_COLOR_BY_LABEL: Record<string, string> = COVERAGE_MODALITY_COLUMNS.reduce(
+    (acc, column) => {
+        acc[column.label] = TREND_MODALITY_COLOR_BY_KEY[column.key];
+        return acc;
+    },
+    {} as Record<string, string>
+);
+
+const renderModalityHeader = (label: string, color: string) => (
+    <span className="inline-flex items-center gap-2">
+        <span
+            className="h-2 w-2 rounded-full border border-black/10"
+            style={{ backgroundColor: color }}
+            aria-hidden="true"
+        />
+        <span>{label}</span>
+    </span>
+);
+
+const renderMetricCountCell = (value: number) => {
+    if (value > 0) {
+        return <span className="text-xs font-medium tabular-nums">{value}</span>;
+    }
+
+    return (
+        <span className="inline-flex items-center rounded-full border border-dashed border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            No data
+        </span>
+    );
+};
+
+const renderDaysFromConsentCell = (value: number | null | undefined) => {
+    if (typeof value === "number") {
+        return <span className="text-xs font-medium tabular-nums">{value}</span>;
+    }
+
+    return (
+        <span className="inline-flex items-center rounded-full border border-dashed border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            No consent date
+        </span>
+    );
+};
+
+const compareDaysFromConsent = (left: number | null | undefined, right: number | null | undefined) => {
+    if (typeof left === "number" && typeof right === "number") {
+        return left - right;
+    }
+    if (typeof left === "number") {
+        return -1;
+    }
+    if (typeof right === "number") {
+        return 1;
+    }
+    return 0;
+};
+
 const toGroupedDataSourceLabel = (value: string | null | undefined): string => {
     const modality = mapDataSourceToCoverageModality(value);
     if (modality) {
@@ -235,6 +408,9 @@ export default function MonitoringPage() {
     const [loading, setLoading] = React.useState(true);
     const [activeTrendTab, setActiveTrendTab] = React.useState<string>("all");
     const [trendSubjectFilter, setTrendSubjectFilter] = React.useState("");
+    const [latestPullSourceTab, setLatestPullSourceTab] = React.useState<string>("all");
+    const [latestPullSubjectFilter, setLatestPullSubjectFilter] = React.useState("");
+    const [pdfGeneratedAt, setPdfGeneratedAt] = React.useState<string | null>(null);
 
     const fetchMonitoring = React.useCallback(async (requestedProjectId: string) => {
         setLoading(true);
@@ -412,6 +588,13 @@ export default function MonitoringPage() {
     const coverageColumns = React.useMemo<GridColDef[]>(() => {
         const baseColumns: GridColDef[] = [
             { field: "subject_id", headerName: "Participant ID", minWidth: 180, flex: 1 },
+            {
+                field: "days_from_consent_date",
+                headerName: "Days From Consent Date",
+                minWidth: 190,
+                type: "number",
+                renderCell: (params) => renderDaysFromConsentCell(typeof params.value === "number" ? params.value : null),
+            },
             { field: "total_pulls", headerName: "All Pull Records", type: "number", minWidth: 150 },
             { field: "pulls_with_unique_file_md5", headerName: "Unique Files (MD5)", type: "number", minWidth: 170 },
         ];
@@ -419,19 +602,12 @@ export default function MonitoringPage() {
         const modalityColumns = COVERAGE_MODALITY_COLUMNS.map((column): GridColDef => ({
             field: column.key,
             headerName: column.label,
+            renderHeader: () => renderModalityHeader(column.label, TREND_MODALITY_COLOR_BY_KEY[column.key]),
             type: "number",
             minWidth: 180,
             renderCell: (params) => {
                 const value = typeof params.value === "number" ? params.value : 0;
-                if (value > 0) {
-                    return <span className="text-xs font-medium">{value}</span>;
-                }
-
-                return (
-                    <span className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-500/50 dark:bg-amber-900/30 dark:text-amber-300">
-                        N/A
-                    </span>
-                );
+                return renderMetricCountCell(value);
             },
         }));
 
@@ -441,22 +617,22 @@ export default function MonitoringPage() {
     const uniqueFilePathColumns = React.useMemo<GridColDef[]>(
         () => [
             { field: "subject_id", headerName: "Participant ID", minWidth: 180, flex: 1 },
+            {
+                field: "days_from_consent_date",
+                headerName: "Days From Consent Date",
+                minWidth: 190,
+                type: "number",
+                renderCell: (params) => renderDaysFromConsentCell(typeof params.value === "number" ? params.value : null),
+            },
             ...COVERAGE_MODALITY_COLUMNS.map((column): GridColDef => ({
                 field: column.key,
                 headerName: column.label,
+                renderHeader: () => renderModalityHeader(column.label, TREND_MODALITY_COLOR_BY_KEY[column.key]),
                 type: "number",
                 minWidth: 180,
                 renderCell: (params) => {
                     const value = typeof params.value === "number" ? params.value : 0;
-                    if (value > 0) {
-                        return <span className="text-xs font-medium">{value}</span>;
-                    }
-
-                    return (
-                        <span className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:border-amber-500/50 dark:bg-amber-900/30 dark:text-amber-300">
-                            N/A
-                        </span>
-                    );
+                    return renderMetricCountCell(value);
                 },
             })),
         ],
@@ -499,46 +675,62 @@ export default function MonitoringPage() {
         }
 
         return [...baseBySubject.entries()]
-            .sort(([a], [b]) => a.localeCompare(b))
             .map(([subjectId, modalityCounts]) => ({
                 id: subjectId,
                 subject_id: subjectId,
+                days_from_consent_date: getDaysFromConsentDate(consentDateBySubject.get(subjectId)),
                 ...modalityCounts,
-            }));
-    }, [data]);
+            }))
+            .sort((left, right) => {
+                const dateComparison = compareDaysFromConsent(left.days_from_consent_date, right.days_from_consent_date);
+                if (dateComparison !== 0) {
+                    return dateComparison;
+                }
+                return left.subject_id.localeCompare(right.subject_id);
+            });
+    }, [consentDateBySubject, data]);
 
     const coverageRows = React.useMemo(() => {
-        return (data?.data_pull_coverage_by_subject ?? []).map((row) => {
-            const modalityUniqueMd5 = COVERAGE_MODALITY_COLUMNS.reduce<Record<CoverageModalityKey, number>>((acc, column) => {
-                const uniqueMd5 = new Set(
-                    row.recent_pull_items
-                        .filter((item) => mapDataSourceToCoverageModality(item.data_source_name) === column.key)
-                        .map((item) => item.file_md5)
-                        .filter((value): value is string => Boolean(value))
-                );
+        return (data?.data_pull_coverage_by_subject ?? [])
+            .map((row) => {
+                const modalityUniqueMd5 = COVERAGE_MODALITY_COLUMNS.reduce<Record<CoverageModalityKey, number>>((acc, column) => {
+                    const uniqueMd5 = new Set(
+                        row.recent_pull_items
+                            .filter((item) => mapDataSourceToCoverageModality(item.data_source_name) === column.key)
+                            .map((item) => item.file_md5)
+                            .filter((value): value is string => Boolean(value))
+                    );
 
-                // If there is exactly one unique pull, it must render as 1 (not N/A).
-                acc[column.key] = uniqueMd5.size;
-                return acc;
-            }, {
-                redcap: 0,
-                eeg_sharepoint: 0,
-                mindlamp: 0,
-                mindlamp_qc_sharepoint: 0,
-                penncnb: 0,
-                cantab: 0,
-                transcript_sharepoint: 0,
+                    // If there is exactly one unique pull, it must render as 1 (not N/A).
+                    acc[column.key] = uniqueMd5.size;
+                    return acc;
+                }, {
+                    redcap: 0,
+                    eeg_sharepoint: 0,
+                    mindlamp: 0,
+                    mindlamp_qc_sharepoint: 0,
+                    penncnb: 0,
+                    cantab: 0,
+                    transcript_sharepoint: 0,
+                });
+
+                return {
+                    id: row.subject_id,
+                    subject_id: row.subject_id,
+                    days_from_consent_date: getDaysFromConsentDate(consentDateBySubject.get(row.subject_id)),
+                    total_pulls: row.total_pulls,
+                    pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
+                    ...modalityUniqueMd5,
+                };
+            })
+            .sort((left, right) => {
+                const dateComparison = compareDaysFromConsent(left.days_from_consent_date, right.days_from_consent_date);
+                if (dateComparison !== 0) {
+                    return dateComparison;
+                }
+                return left.subject_id.localeCompare(right.subject_id);
             });
-
-            return {
-                id: row.subject_id,
-                subject_id: row.subject_id,
-                total_pulls: row.total_pulls,
-                pulls_with_unique_file_md5: row.pulls_with_unique_file_md5,
-                ...modalityUniqueMd5,
-            };
-        });
-    }, [data]);
+    }, [consentDateBySubject, data]);
 
     const gridSx = React.useMemo(
         () => ({
@@ -569,22 +761,26 @@ export default function MonitoringPage() {
         [isDarkMode]
     );
 
-    const consentBySiteColumns = React.useMemo<GridColDef[]>(
+    const consentBySubjectColumns = React.useMemo<GridColDef[]>(
         () => [
+            { field: "subject_id", headerName: "Subject ID", minWidth: 180, flex: 1.2 },
             { field: "site_id", headerName: "Site ID", minWidth: 160, flex: 1 },
-            { field: "subject_ids", headerName: "Subject IDs", minWidth: 300, flex: 2 },
-            { field: "count", headerName: "Count", type: "number", minWidth: 110 },
+            { field: "consent_date", headerName: "Consent Date", minWidth: 170, flex: 1 },
+            { field: "mindlamp_ids", headerName: "MindLAMP IDs", minWidth: 220, flex: 1.5 },
+            { field: "cantab_ids", headerName: "CANTAB IDs", minWidth: 220, flex: 1.5 },
         ],
         []
     );
 
-    const consentBySiteRows = React.useMemo(
+    const consentBySubjectRows = React.useMemo(
         () =>
-            (data?.summary.subjects_missing_required_variables_by_site ?? []).map((row) => ({
-                id: row.site_id,
+            (data?.subjects_with_consent_date ?? []).map((row) => ({
+                id: row.subject_id,
+                subject_id: row.subject_id,
                 site_id: row.site_id,
-                subject_ids: row.subject_ids?.join(", ") || "N/A",
-                count: row.count,
+                consent_date: asReadableDate(row.consent_date),
+                mindlamp_ids: row.mindlamp_id || "N/A",
+                cantab_ids: row.cantab_id || "N/A",
             })),
         [data]
     );
@@ -611,10 +807,8 @@ export default function MonitoringPage() {
 
     const subjectSiteMap = React.useMemo(() => {
         const map = new Map<string, string>();
-        for (const row of data?.summary.subjects_missing_required_variables_by_site ?? []) {
-            for (const subjectId of row.subject_ids) {
-                map.set(subjectId, row.site_id);
-            }
+        for (const row of data?.subjects_with_consent_date ?? []) {
+            map.set(row.subject_id, row.site_id);
         }
         return map;
     }, [data]);
@@ -681,6 +875,38 @@ export default function MonitoringPage() {
             }));
     }, [data, subjectSiteMap]);
 
+    const latestPullSourceTabOptions = React.useMemo(() => {
+        const available = new Set<string>();
+        for (const row of latestDataPullRows) {
+            if (row.data_source_name) {
+                available.add(row.data_source_name);
+            }
+        }
+
+        return [
+            { key: "all", label: "All" },
+            ...[...available]
+                .sort((a, b) => a.localeCompare(b))
+                .map((sourceName) => ({ key: sourceName, label: sourceName })),
+        ];
+    }, [latestDataPullRows]);
+
+    React.useEffect(() => {
+        if (!latestPullSourceTabOptions.some((tab) => tab.key === latestPullSourceTab)) {
+            setLatestPullSourceTab("all");
+        }
+    }, [latestPullSourceTab, latestPullSourceTabOptions]);
+
+    const filteredLatestDataPullRows = React.useMemo(() => {
+        const normalizedSubjectFilter = latestPullSubjectFilter.trim().toLowerCase();
+
+        return latestDataPullRows.filter((row) => {
+            const matchesSource = latestPullSourceTab === "all" || row.data_source_name === latestPullSourceTab;
+            const matchesSubject = !normalizedSubjectFilter || row.subject_id.toLowerCase().includes(normalizedSubjectFilter);
+            return matchesSource && matchesSubject;
+        });
+    }, [latestDataPullRows, latestPullSourceTab, latestPullSubjectFilter]);
+
     const warningColumns = React.useMemo<GridColDef[]>(
         () => [
             { field: "timestamp", headerName: "Timestamp", minWidth: 220, flex: 1.2 },
@@ -706,6 +932,15 @@ export default function MonitoringPage() {
             })),
         [data]
     );
+
+    const handleSavePdf = React.useCallback(() => {
+        const generatedAt = new Date().toLocaleString();
+        setPdfGeneratedAt(generatedAt);
+
+        window.setTimeout(() => {
+            window.print();
+        }, 0);
+    }, []);
 
     const last48HourPullActivity = React.useMemo(() => {
         const end = new Date();
@@ -799,11 +1034,100 @@ export default function MonitoringPage() {
         });
     }, [last48HourPullActivity.buckets]);
 
+    const consentPrintRows = React.useMemo<PrintTableRow[]>(
+        () => consentBySubjectRows.map((row) => ({
+            id: String(row.id),
+            subject_id: row.subject_id,
+            site_id: row.site_id,
+            consent_date: row.consent_date,
+            mindlamp_ids: row.mindlamp_ids,
+            cantab_ids: row.cantab_ids,
+        })),
+        [consentBySubjectRows]
+    );
+
+    const newlyAddedPrintRows = React.useMemo<PrintTableRow[]>(
+        () => newlyAddedRows.map((row) => ({
+            id: String(row.id),
+            subject_id: row.subject_id,
+            site_id: row.site_id,
+            created_at: row.created_at,
+        })),
+        [newlyAddedRows]
+    );
+
+    const latestDataPullPrintRows = React.useMemo<PrintTableRow[]>(
+        () => filteredLatestDataPullRows.map((row) => ({
+            id: String(row.id),
+            pull_timestamp: row.pull_timestamp,
+            file_name: row.file_name,
+            site_id: row.site_id,
+            subject_id: row.subject_id,
+            data_source_name: row.data_source_name,
+        })),
+        [filteredLatestDataPullRows]
+    );
+
+    const warningPrintRows = React.useMemo<PrintTableRow[]>(
+        () => warningRows.map((row) => ({
+            id: String(row.id),
+            timestamp: row.timestamp,
+            level: row.level,
+            message: row.message,
+            site_id: row.site_id,
+            subject_id: row.subject_id,
+            data_source_name: row.data_source_name,
+        })),
+        [warningRows]
+    );
+
+    const uniqueFilePathPrintCards = React.useMemo<PrintMetricCardRow[]>(
+        () => uniqueFilePathRows.map((row) => ({
+            id: String(row.id),
+            title: String(row.subject_id),
+            subtitle: "Unique file paths by data source",
+            metrics: [
+                { label: "Days From Consent Date", value: typeof row.days_from_consent_date === "number" ? row.days_from_consent_date : "No consent date" },
+                ...COVERAGE_MODALITY_COLUMNS.map((column) => ({
+                    label: column.label,
+                    value: row[column.key],
+                })),
+            ],
+        })),
+        [uniqueFilePathRows]
+    );
+
+    const coveragePrintCards = React.useMemo<PrintMetricCardRow[]>(
+        () => coverageRows.map((row) => ({
+            id: String(row.id),
+            title: String(row.subject_id),
+            subtitle: `All Pull Records: ${row.total_pulls} | Unique Files (MD5): ${row.pulls_with_unique_file_md5}`,
+            metrics: [
+                { label: "Days From Consent Date", value: typeof row.days_from_consent_date === "number" ? row.days_from_consent_date : "No consent date" },
+                ...COVERAGE_MODALITY_COLUMNS.map((column) => ({
+                    label: column.label,
+                    value: row[column.key],
+                })),
+            ],
+        })),
+        [coverageRows]
+    );
+
     return (
-        <div className="container mx-auto p-6 max-w-6xl flex flex-col gap-6">
+        <div className="monitoring-print-root container mx-auto flex max-w-6xl flex-col gap-6 p-6">
+            <section className="monitoring-print-only rounded-lg border bg-white p-6 text-black">
+                <div className="mb-4 border-b pb-4">
+                    <h1 className="text-2xl font-semibold">Lochness Monitoring Report</h1>
+                    <div className="mt-2 grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
+                        <p><span className="font-medium">Project:</span> {projectId}</p>
+                        <p><span className="font-medium">Generated:</span> {pdfGeneratedAt ?? new Date().toLocaleString()}</p>
+                        <p><span className="font-medium">Route:</span> /monitoring/logs</p>
+                    </div>
+                </div>
+            </section>
             <Heading icon={monitoringIcon} title="Monitoring" />
 
-            <div className="border rounded-lg p-4 bg-card text-card-foreground">
+            <div className="monitoring-print-hide border rounded-lg p-4 bg-card text-card-foreground">
                 <div className="flex flex-col md:flex-row md:items-end gap-3">
                     <div className="flex-1">
                         <label htmlFor="project-id" className="text-sm font-medium block mb-1">Project ID</label>
@@ -823,6 +1147,16 @@ export default function MonitoringPage() {
                         <RefreshCcw className="h-4 w-4" />
                         Load Monitoring
                     </Button>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleSavePdf}
+                        disabled={loading || !data}
+                        className="gap-2"
+                    >
+                        <FileDown className="h-4 w-4" />
+                        Save as PDF
+                    </Button>
                 </div>
             </div>
 
@@ -836,25 +1170,51 @@ export default function MonitoringPage() {
                 </div>
             ) : (
                 <>
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <h2 className="text-lg font-semibold mb-3">Summary</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                            <div className="border rounded-md p-3">
-                                <p className="text-muted-foreground">Subjects With Consent Date</p>
-                                <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_count}</p>
+                        <div className="monitoring-print-hide overflow-x-auto">
+                            <div className="grid min-w-[760px] grid-cols-3 gap-3 text-sm">
+                                <div className="border rounded-md p-3">
+                                    <p className="text-muted-foreground">Subjects With Consent Date</p>
+                                    <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_count}</p>
+                                </div>
+                                <div className="border rounded-md p-3">
+                                    <p className="text-muted-foreground">Sites With Any Consented Subject</p>
+                                    <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_by_site.length}</p>
+                                </div>
+                                <div className="border rounded-md p-3">
+                                    <p className="text-muted-foreground">Newly Added Subjects (Last 48 Hours)</p>
+                                    <p className="text-2xl font-semibold">{data.summary.newly_added_last_night_count}</p>
+                                </div>
                             </div>
-                            <div className="border rounded-md p-3">
-                                <p className="text-muted-foreground">Sites With Any Consented Subject</p>
-                                <p className="text-2xl font-semibold">{data.summary.subjects_missing_required_variables_by_site.length}</p>
-                            </div>
-                            <div className="border rounded-md p-3">
-                                <p className="text-muted-foreground">Newly Added Subjects Last Night</p>
-                                <p className="text-2xl font-semibold">{data.summary.newly_added_last_night_count}</p>
-                            </div>
+                        </div>
+                        <div className="monitoring-print-only rounded-md border border-slate-300 bg-white p-3">
+                            <table className="w-full table-fixed border-collapse text-[11px] leading-4 text-slate-900">
+                                <thead>
+                                    <tr>
+                                        <th className="w-[58%] border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold">Metric</th>
+                                        <th className="w-[42%] border border-slate-300 bg-slate-100 px-2 py-1 text-left font-semibold">Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td className="border border-slate-300 px-2 py-1">Subjects With Consent Date</td>
+                                        <td className="border border-slate-300 px-2 py-1">{data.summary.subjects_missing_required_variables_count}</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="border border-slate-300 px-2 py-1">Sites With Any Consented Subject</td>
+                                        <td className="border border-slate-300 px-2 py-1">{data.summary.subjects_missing_required_variables_by_site.length}</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="border border-slate-300 px-2 py-1">Newly Added Subjects (Last 48 Hours)</td>
+                                        <td className="border border-slate-300 px-2 py-1">{data.summary.newly_added_last_night_count}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                             <div>
                                 <h2 className="text-lg font-semibold">Latest Data Pulls, Last 48 Hours</h2>
@@ -915,28 +1275,35 @@ export default function MonitoringPage() {
                                                 : `${bucket.label}: 0 pulls`;
 
                                             return (
-                                                <div key={bucket.hourStart} className="group flex h-full flex-1 items-end" title={title}>
-                                                    <div className="flex h-full w-full items-end">
-                                                        <div
-                                                            className="flex w-full flex-col justify-end overflow-hidden rounded-sm bg-border/30 transition-opacity group-hover:opacity-90"
-                                                            style={{ height: `${heightPercent}%` }}
-                                                        >
-                                                            {bucket.total > 0 ? (
-                                                                bucket.segments.map((segment) => (
-                                                                    <div
-                                                                        key={`${bucket.hourStart}-${segment.key}`}
-                                                                        style={{
-                                                                            height: `${(segment.count / bucket.total) * 100}%`,
-                                                                            backgroundColor: segment.color,
-                                                                        }}
-                                                                    />
-                                                                ))
-                                                            ) : (
-                                                                <div className="h-full w-full bg-border/50" />
-                                                            )}
+                                                <Tooltip key={bucket.hourStart}>
+                                                    <TooltipTrigger asChild>
+                                                        <div className="group flex h-full flex-1 items-end">
+                                                            <div className="flex h-full w-full items-end">
+                                                                <div
+                                                                    className="flex w-full flex-col justify-end overflow-hidden rounded-sm bg-border/30 transition-opacity group-hover:opacity-90"
+                                                                    style={{ height: `${heightPercent}%` }}
+                                                                >
+                                                                    {bucket.total > 0 ? (
+                                                                        bucket.segments.map((segment) => (
+                                                                            <div
+                                                                                key={`${bucket.hourStart}-${segment.key}`}
+                                                                                style={{
+                                                                                    height: `${(segment.count / bucket.total) * 100}%`,
+                                                                                    backgroundColor: segment.color,
+                                                                                }}
+                                                                            />
+                                                                        ))
+                                                                    ) : (
+                                                                        <div className="h-full w-full bg-border/50" />
+                                                                    )}
+                                                                </div>
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                </div>
+                                                    </TooltipTrigger>
+                                                    <TooltipContent>
+                                                        <pre className="whitespace-pre-wrap text-xs">{title}</pre>
+                                                    </TooltipContent>
+                                                </Tooltip>
                                             );
                                         })}
                                     </div>
@@ -974,108 +1341,192 @@ export default function MonitoringPage() {
                         )}
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Subjects With Consent Date</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[320px] w-full">
-                                <DataGrid
-                                    rows={consentBySiteRows}
-                                    columns={consentBySiteColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[320px] w-full">
+                                    <DataGrid
+                                        rows={consentBySubjectRows}
+                                        columns={consentBySubjectColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "subject_id", label: "Subject ID", className: "w-[21%]" },
+                                { key: "site_id", label: "Site ID", className: "w-[9%]" },
+                                { key: "consent_date", label: "Consent Date", className: "w-[15%]" },
+                                { key: "mindlamp_ids", label: "MindLAMP ID", className: "w-[27%]" },
+                                { key: "cantab_ids", label: "CANTAB ID", className: "w-[28%]" },
+                            ]}
+                            rows={consentPrintRows}
+                            emptyLabel="No records"
+                        />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
-                        <h2 className="text-lg font-semibold mb-3">Newly Added Subjects</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[320px] w-full">
-                                <DataGrid
-                                    rows={newlyAddedRows}
-                                    columns={newlyAddedColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
+                        <h2 className="text-lg font-semibold mb-3">Newly Added Subjects (Last 48 Hours)</h2>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[320px] w-full">
+                                    <DataGrid
+                                        rows={newlyAddedRows}
+                                        columns={newlyAddedColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "subject_id", label: "Subject ID", className: "w-[28%]" },
+                                { key: "site_id", label: "Site ID", className: "w-[16%]" },
+                                { key: "created_at", label: "Created At", className: "w-[56%]" },
+                            ]}
+                            rows={newlyAddedPrintRows}
+                            emptyLabel="No records"
+                        />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Unique File Paths by Data Source</h2>
                         {data.metadata?.notes?.files_available === false && (
                             <p className="text-xs text-muted-foreground mb-3">
                                 File path metrics are unavailable because the `files` schema does not contain required source/path columns.
                             </p>
                         )}
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[220px] w-full">
-                                <DataGrid
-                                    rows={uniqueFilePathRows}
-                                    columns={uniqueFilePathColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooter
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[420px] w-full">
+                                    <DataGrid
+                                        rows={uniqueFilePathRows}
+                                        columns={uniqueFilePathColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{
+                                            pagination: {
+                                                paginationModel: { pageSize: 10, page: 0 },
+                                            },
+                                        }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintMetricCards rows={uniqueFilePathPrintCards} emptyLabel="No file path metrics" />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Data Pull Coverage</h2>
                         {data.metadata?.notes?.data_pulls_available === false && (
                             <p className="text-xs text-muted-foreground mb-3">
                                 Data pull metrics are unavailable in this environment because `data_pulls` schema does not contain the required subject mapping columns.
                             </p>
                         )}
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[420px] w-full">
-                                <DataGrid
-                                    rows={coverageRows}
-                                    columns={coverageColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 25, 50]}
-                                    initialState={{
-                                        pagination: {
-                                            paginationModel: { pageSize: 10, page: 0 },
-                                        },
-                                    }}
-                                    localeText={{ noRowsLabel: "No records" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[420px] w-full">
+                                    <DataGrid
+                                        rows={coverageRows}
+                                        columns={coverageColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 25, 50]}
+                                        initialState={{
+                                            pagination: {
+                                                paginationModel: { pageSize: 10, page: 0 },
+                                            },
+                                        }}
+                                        localeText={{ noRowsLabel: "No records" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintMetricCards rows={coveragePrintCards} emptyLabel="No records" />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Latest 200 data pulls</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[360px] w-full">
-                                <DataGrid
-                                    rows={latestDataPullRows}
-                                    columns={latestDataPullColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 20, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No data pulls" }}
-                                />
+                        <div className="monitoring-print-hide">
+                            <Tabs value={latestPullSourceTab} onValueChange={setLatestPullSourceTab} className="w-full">
+                                <TabsList className="mb-3 flex h-auto w-full flex-wrap justify-start gap-2">
+                                    {latestPullSourceTabOptions.map((tab) => (
+                                        <TabsTrigger key={tab.key} value={tab.key}>
+                                            <span className="inline-flex items-center gap-2">
+                                                {tab.key !== "all" && MODALITY_COLOR_BY_LABEL[tab.label] ? (
+                                                    <span
+                                                        className="h-2 w-2 rounded-full border border-black/10"
+                                                        style={{ backgroundColor: MODALITY_COLOR_BY_LABEL[tab.label] }}
+                                                        aria-hidden="true"
+                                                    />
+                                                ) : null}
+                                                <span>{tab.label}</span>
+                                            </span>
+                                        </TabsTrigger>
+                                    ))}
+                                </TabsList>
+                            </Tabs>
+                            <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                                <div className="w-full md:max-w-sm">
+                                    <label htmlFor="latest-pulls-subject-filter" className="mb-1 block text-sm font-medium">
+                                        Filter by Subject ID
+                                    </label>
+                                    <Input
+                                        id="latest-pulls-subject-filter"
+                                        value={latestPullSubjectFilter}
+                                        onChange={(event) => setLatestPullSubjectFilter(event.target.value)}
+                                        placeholder="Type a subject ID"
+                                    />
+                                </div>
+                                <p className="text-sm text-muted-foreground">
+                                    Showing {filteredLatestDataPullRows.length} record{filteredLatestDataPullRows.length === 1 ? "" : "s"}
+                                </p>
                             </div>
-                        </MuiThemeProvider>
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[360px] w-full">
+                                    <DataGrid
+                                        rows={filteredLatestDataPullRows}
+                                        columns={latestDataPullColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 20, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No data pulls" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "pull_timestamp", label: "Pull Timestamp", className: "w-[20%]" },
+                                { key: "file_name", label: "File Name", className: "w-[28%]" },
+                                { key: "site_id", label: "Site", className: "w-[10%]" },
+                                { key: "subject_id", label: "Subject", className: "w-[16%]" },
+                                { key: "data_source_name", label: "Data Source", className: "w-[26%]" },
+                            ]}
+                            rows={latestDataPullPrintRows}
+                            emptyLabel="No data pulls"
+                        />
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground">
                         <div className="flex items-center gap-2 mb-3">
                             <BarChart3 className="h-5 w-5" />
                             <h2 className="text-lg font-semibold">Pull Trend (daily, pulls with unique file_md5, newest first)</h2>
@@ -1169,15 +1620,18 @@ export default function MonitoringPage() {
                                                                         <div className="flex h-full overflow-hidden rounded" style={{ width: `${widthPercent}%` }}>
                                                                             {showStackedSegments ? (
                                                                                 stackedSegments.map((segment) => (
-                                                                                    <div
-                                                                                        key={`${subjectId}-${point.day}-${segment.key}`}
-                                                                                        className="h-full first:rounded-l last:rounded-r"
-                                                                                        style={{
-                                                                                            width: `${(segment.count / point.pulls_with_unique_file_md5) * 100}%`,
-                                                                                            backgroundColor: segment.color,
-                                                                                        }}
-                                                                                        title={`${segment.label}: ${segment.count}`}
-                                                                                    />
+                                                                                    <Tooltip key={`${subjectId}-${point.day}-${segment.key}`}>
+                                                                                        <TooltipTrigger asChild>
+                                                                                            <div
+                                                                                                className="h-full first:rounded-l last:rounded-r"
+                                                                                                style={{
+                                                                                                    width: `${(segment.count / point.pulls_with_unique_file_md5) * 100}%`,
+                                                                                                    backgroundColor: segment.color,
+                                                                                                }}
+                                                                                            />
+                                                                                        </TooltipTrigger>
+                                                                                        <TooltipContent>{segment.label}: {segment.count}</TooltipContent>
+                                                                                    </Tooltip>
                                                                                 ))
                                                                             ) : (
                                                                                 <div
@@ -1208,9 +1662,12 @@ export default function MonitoringPage() {
                                                                 <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 sm:ml-[168px]">
                                                                     <ul className="max-h-32 space-y-1 overflow-y-auto pr-1 text-[11px] text-foreground/90">
                                                                         {point.file_paths.map((filePath, index) => (
-                                                                            <li key={`${subjectId}-${point.day}-${filePath}-${index}`} className="truncate" title={filePath}>
-                                                                                {asFileName(filePath)}
-                                                                            </li>
+                                                                            <Tooltip key={`${subjectId}-${point.day}-${filePath}-${index}`}>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <li className="truncate">{asFileName(filePath)}</li>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent className="max-w-xs break-all">{filePath}</TooltipContent>
+                                                                            </Tooltip>
                                                                         ))}
                                                                     </ul>
                                                                 </div>
@@ -1226,22 +1683,36 @@ export default function MonitoringPage() {
                         </div>
                     </section>
 
-                    <section className="border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto">
+                    <section className="monitoring-print-section border rounded-lg p-4 bg-card text-card-foreground overflow-x-auto monitoring-print-grid">
                         <h2 className="text-lg font-semibold mb-3">Last 20 Warning Logs</h2>
-                        <MuiThemeProvider theme={muiTheme}>
-                            <div className="h-[360px] w-full">
-                                <DataGrid
-                                    rows={warningRows}
-                                    columns={warningColumns}
-                                    sx={gridSx}
-                                    disableRowSelectionOnClick
-                                    hideFooterSelectedRowCount
-                                    pageSizeOptions={[10, 20, 50]}
-                                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                                    localeText={{ noRowsLabel: "No warning logs" }}
-                                />
-                            </div>
-                        </MuiThemeProvider>
+                        <div className="monitoring-print-hide">
+                            <MuiThemeProvider theme={muiTheme}>
+                                <div className="h-[360px] w-full">
+                                    <DataGrid
+                                        rows={warningRows}
+                                        columns={warningColumns}
+                                        sx={gridSx}
+                                        disableRowSelectionOnClick
+                                        hideFooterSelectedRowCount
+                                        pageSizeOptions={[10, 20, 50]}
+                                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                                        localeText={{ noRowsLabel: "No warning logs" }}
+                                    />
+                                </div>
+                            </MuiThemeProvider>
+                        </div>
+                        <PrintTable
+                            columns={[
+                                { key: "timestamp", label: "Timestamp", className: "w-[15%]" },
+                                { key: "level", label: "Level", className: "w-[8%]" },
+                                { key: "message", label: "Message", className: "w-[39%]" },
+                                { key: "site_id", label: "Site", className: "w-[8%]" },
+                                { key: "subject_id", label: "Subject", className: "w-[12%]" },
+                                { key: "data_source_name", label: "Data Source", className: "w-[18%]" },
+                            ]}
+                            rows={warningPrintRows}
+                            emptyLabel="No warning logs"
+                        />
                     </section>
                 </>
             )}
