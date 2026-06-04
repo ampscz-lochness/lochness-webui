@@ -51,6 +51,14 @@ export type SharePointSubject = {
     days: SharePointActivityRow[];
     /** Run sheet form instances from formsdb */
     run_sheets: RunSheetRecord[];
+    /** EEG actual file count aggregated across all timepoints */
+    eeg_file_count: number;
+    /** EEG JSON file count aggregated across all timepoints */
+    eeg_json_count: number;
+    /** EEG run-sheet count (has_data=true) aggregated across all timepoints */
+    eeg_run_sheet_count: number;
+    /** True when EEG file/json/run-sheet counts are not all equal */
+    eeg_count_mismatch: boolean;
 };
 
 // ── Top-level payload ─────────────────────────────────────────────────────────

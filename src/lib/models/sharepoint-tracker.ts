@@ -432,6 +432,10 @@ export class SharePointTracker {
                     screen_fail_comments: sfMap.get(r.subject_id)?.screen_fail_comments ?? null,
                     days: [],
                     run_sheets: [],
+                    eeg_file_count: 0,
+                    eeg_json_count: 0,
+                    eeg_run_sheet_count: 0,
+                    eeg_count_mismatch: false,
                 })),
                 modality_keys: [],
                 run_sheet_forms: [],
@@ -808,19 +812,46 @@ export class SharePointTracker {
         }
 
         // ── 6. Assemble per-subject payload ───────────────────────────────────
-        const subjects: SharePointSubject[] = consentSubjects.map((row) => ({
-            subject_id: row.subject_id,
-            site_id: row.site_id,
-            consent_date: row.consent_date,
-            is_consented: row.is_consented,
-            is_screen_failed: statusFlagsBySubject.get(row.subject_id)?.is_screen_failed ?? false,
-            is_withdrawn: statusFlagsBySubject.get(row.subject_id)?.is_withdrawn ?? false,
-            screen_fail_reason: statusFlagsBySubject.get(row.subject_id)?.screen_fail_reason ?? null,
-            screen_fail_comments: statusFlagsBySubject.get(row.subject_id)?.screen_fail_comments ?? null,
-            day1a_predose_date: day1aDatesBySubject.get(row.subject_id) ?? null,
-            days: daysBySubject.get(row.subject_id) ?? [],
-            run_sheets: runSheetsBySubject.get(row.subject_id) ?? [],
-        }));
+        const subjects: SharePointSubject[] = consentSubjects.map((row) => {
+            const subjectDays = daysBySubject.get(row.subject_id) ?? [];
+            const subjectRunSheets = runSheetsBySubject.get(row.subject_id) ?? [];
+
+            const eegFileCount = subjectDays
+                .filter((day) => day.modality_key === "eeg_sharepoint" && day.file_type === "actual")
+                .reduce((sum, day) => {
+                    const zipCount = day.file_paths.filter((path) => {
+                        const normalized = path.trim().toLowerCase().split(/[?#]/)[0];
+                        return normalized.endsWith(".zip");
+                    }).length;
+                    return sum + zipCount;
+                }, 0);
+            const eegJsonCount = subjectDays
+                .filter((day) => day.modality_key === "eeg_sharepoint" && day.file_type === "json")
+                .reduce((sum, day) => sum + day.unique_file_count, 0);
+            const eegRunSheetCount = subjectRunSheets.filter(
+                (runSheet) => runSheet.has_data && runSheetFormToModality[runSheet.form_name] === "eeg_sharepoint"
+            ).length;
+            // JSON count can legitimately diverge across timepoints; only flag mismatches between EEG zip files and run sheets.
+            const eegCountMismatch = eegFileCount !== eegRunSheetCount;
+
+            return {
+                subject_id: row.subject_id,
+                site_id: row.site_id,
+                consent_date: row.consent_date,
+                is_consented: row.is_consented,
+                is_screen_failed: statusFlagsBySubject.get(row.subject_id)?.is_screen_failed ?? false,
+                is_withdrawn: statusFlagsBySubject.get(row.subject_id)?.is_withdrawn ?? false,
+                screen_fail_reason: statusFlagsBySubject.get(row.subject_id)?.screen_fail_reason ?? null,
+                screen_fail_comments: statusFlagsBySubject.get(row.subject_id)?.screen_fail_comments ?? null,
+                day1a_predose_date: day1aDatesBySubject.get(row.subject_id) ?? null,
+                days: subjectDays,
+                run_sheets: subjectRunSheets,
+                eeg_file_count: eegFileCount,
+                eeg_json_count: eegJsonCount,
+                eeg_run_sheet_count: eegRunSheetCount,
+                eeg_count_mismatch: eegCountMismatch,
+            };
+        });
 
         // ── 7. Collect modality keys present in data ──────────────────────────
         const seenModalities = new Set<string>();

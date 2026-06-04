@@ -230,6 +230,18 @@ function SubjectBadges({
                     <TooltipContent className="whitespace-pre-line max-w-xs">{sfBadge.title}</TooltipContent>
                 </Tooltip>
             )}
+            {subject.eeg_count_mismatch && (
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <span className="inline-flex min-h-4 items-center justify-center rounded-full bg-amber-600 px-1.5 py-0.5 text-[8px] font-bold text-white dark:bg-amber-700">
+                            EEG F:{subject.eeg_file_count} J:{subject.eeg_json_count} R:{subject.eeg_run_sheet_count}
+                        </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="whitespace-pre-line max-w-xs">
+                        EEG count mismatch across all timepoints
+                    </TooltipContent>
+                </Tooltip>
+            )}
         </span>
     );
 }
@@ -319,6 +331,7 @@ export default function SharePointTrackerPage() {
         if (!data) return 0;
         return filteredSubjects.filter((subject) => {
             if (subject.is_screen_failed) return false; // screen-failed not expected to complete
+            if (subject.eeg_count_mismatch) return true;
             for (const m of SHAREPOINT_MODALITIES) {
                 if (!data.modality_keys.includes(m.key)) continue;
                 const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms, data.metadata.json_required_by_modality ?? {});
@@ -618,10 +631,13 @@ export default function SharePointTrackerPage() {
                                             {filteredSubjects.map((subject) => {
                                                 const isExpanded = expandedSubjectId === subject.subject_id;
                                                 // Determine if any modality is incomplete for this subject
-                                                const isIncomplete = !subject.is_screen_failed && visibleModalities.some((m) => {
-                                                    const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms, data.metadata.json_required_by_modality ?? {});
-                                                    return (s.jsonRequired && !s.hasJson) || !s.hasActual || (s.runSheetExpected && !s.hasRunSheet);
-                                                });
+                                                const isIncomplete = !subject.is_screen_failed && (
+                                                    subject.eeg_count_mismatch ||
+                                                    visibleModalities.some((m) => {
+                                                        const s = getModalityStatus(subject, m.key, data.run_sheet_form_to_modality, data.run_sheet_forms, data.metadata.json_required_by_modality ?? {});
+                                                        return (s.jsonRequired && !s.hasJson) || !s.hasActual || (s.runSheetExpected && !s.hasRunSheet);
+                                                    })
+                                                );
                                                 const colSpan = visibleModalities.length * 3 + 1;
 
                                                 return (
